@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ETF 回歸分析</title>
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <header>
+    <h1>ETF 回歸分析儀表板</h1>
+  </header>
+
+  <!-- Tab 導覽 -->
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="prices">個股走勢</button>
+    <button class="tab-btn" data-tab="normalized">正規化比較</button>
+    <button class="tab-btn" data-tab="regression">回歸分析</button>
+    <button class="tab-btn" data-tab="portfolio">投資組合比較</button>
+    <button class="tab-btn" data-tab="etfinfo">ETF 資訊</button>
+  </nav>
+
+  <!-- 日期範圍（全域） -->
+  <div class="date-range-bar">
+    <label>起始日：<input type="date" id="startDate" value="2020-01-01" /></label>
+    <label>結束日：<input type="date" id="endDate" /></label>
+    <button id="applyDate">套用</button>
+  </div>
+
+  <!-- Tab：個股走勢 -->
+  <section id="tab-prices" class="tab-content active">
+    <div class="controls">
+      <label>選擇 ETF：
+        <select id="pricesTicker"></select>
+      </label>
+    </div>
+    <div id="pricesChart" class="chart"></div>
+  </section>
+
+  <!-- Tab：正規化比較 -->
+  <section id="tab-normalized" class="tab-content">
+    <div class="controls">
+      <label>選擇 ETF（可複選）：</label>
+      <div id="normalizedCheckboxes" class="checkbox-group"></div>
+    </div>
+    <div id="normalizedChart" class="chart"></div>
+  </section>
+
+  <!-- Tab：回歸分析 -->
+  <section id="tab-regression" class="tab-content">
+    <p class="info-text">以 <strong id="benchmarkLabel"></strong> 為基準標的（可在 config.yaml 修改）</p>
+    <table id="regressionTable" class="data-table">
+      <thead>
+        <tr>
+          <th>ETF</th><th>Beta</th><th>Alpha（年化）</th>
+          <th>R²</th><th>P-value</th><th>觀察日數</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <h3>滾動 Beta（60日）</h3>
+    <div id="rollingBetaChart" class="chart"></div>
+  </section>
+
+  <!-- Tab：投資組合比較 -->
+  <section id="tab-portfolio" class="tab-content">
+    <div id="portfolioChart" class="chart"></div>
+    <h3>統計摘要</h3>
+    <table id="portfolioSummary" class="data-table">
+      <thead>
+        <tr>
+          <th>投資組合</th><th>總報酬</th><th>年化報酬（CAGR）</th>
+          <th>年化波動度</th><th>Sharpe</th><th>最大回撤</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- Tab：ETF 資訊 -->
+  <section id="tab-etfinfo" class="tab-content">
+    <table id="etfInfoTable" class="data-table">
+      <thead>
+        <tr>
+          <th>代號</th><th>名稱</th><th>交易所</th><th>幣別</th>
+          <th>管理費（年）</th><th>最後更新日</th><th>狀態</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <script src="/static/js/main.js"></script>
+  <script src="/static/js/charts.js"></script>
+  <script src="/static/js/portfolio.js"></script>
+</body>
+</html>

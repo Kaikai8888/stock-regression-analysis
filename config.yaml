@@ -1,0 +1,115 @@
+settings:
+  base_currency: TWD      # 所有投資組合比較統一換算為此幣別
+  benchmark: VT           # 回歸分析的基準標的
+
+# ============================================================
+# ETF 清單
+# expense_ratio: 年費率（小數，例如 0.0032 = 0.32%）
+# 台灣 ETF 的管理費請每年手動更新（TWSE API 無此資料）
+# ============================================================
+etfs:
+  # ── 美國 ETF ──────────────────────────────────────────────────────────────
+  # 費率來源：官方網站，每年自動更新，建議每年初複查一次
+  # VT 於 2025/02 由 Vanguard 調降費率（0.07% → 0.06%）
+
+  - ticker: VT
+    exchange: US
+    name: "Vanguard Total World Stock ETF"
+    expense_ratio: 0.0006
+    # 0.06% | 官方確認 2025/02
+    # 查詢：https://investor.vanguard.com/investment-products/etfs/profile/vt
+
+  - ticker: IXN
+    exchange: US
+    name: "iShares Global Tech ETF"
+    expense_ratio: 0.0039
+    # 0.39% | 官方確認 2025/12
+    # 查詢：https://www.ishares.com/us/products/239750/ishares-global-tech-etf
+
+  - ticker: IEF
+    exchange: US
+    name: "iShares 7-10 Year Treasury Bond ETF"
+    expense_ratio: 0.0015
+    # 0.15% | 官方確認 2025/12
+    # 查詢：https://www.ishares.com/us/products/239456/ishares-710-year-treasury-bond-etf
+
+  # ── 台灣 ETF ──────────────────────────────────────────────────────────────
+  # 費率為「總管理費用率」（含經理費、保管費、手續費、交易稅及其他費用）
+  # 來源：MoneyDJ「基本資料」頁面「總管理費用(%)」欄位
+  # 自動更新：python scripts/fetch_expense_ratios.py --update
+  # 查詢頁面：https://www.moneydj.com/ETF/X/Basic/Basic0004.xdjhtm?etfid=TICKER.TW
+
+  - ticker: "00662"
+    exchange: TWSE
+    name: "富邦NASDAQ"
+    expense_ratio: 0.0054
+    # 0.54% | MoneyDJ 總管理費用率（2026/03 資料）
+    # 查詢：https://www.moneydj.com/ETF/X/Basic/Basic0004.xdjhtm?etfid=00662.TW
+
+  - ticker: "00679B"
+    exchange: TWO
+    name: "元大美債20年"
+    expense_ratio: 0.0014
+    # 0.14% | MoneyDJ 總管理費用率（2026/03 資料）
+    # 掛牌於 TPEx（OTC 櫃買中心），yfinance 代號為 00679B.TWO
+    # 查詢：https://www.moneydj.com/ETF/X/Basic/Basic0004.xdjhtm?etfid=00679B.TW
+
+  - ticker: "00646"
+    exchange: TWSE
+    name: "元大S&P500"
+    expense_ratio: 0.0036
+    # 0.36% | MoneyDJ 總管理費用率（2026/03 資料）
+    # 查詢：https://www.moneydj.com/ETF/X/Basic/Basic0004.xdjhtm?etfid=00646.TW
+
+  - ticker: "0050"
+    exchange: TWSE
+    name: "元大台灣50"
+    expense_ratio: 0.0022
+    # 0.22% | MoneyDJ 總管理費用率（2026/03 資料）
+    # 查詢：https://www.moneydj.com/ETF/X/Basic/Basic0004.xdjhtm?etfid=0050.TW
+
+  - ticker: "00709"
+    exchange: TWSE
+    name: "富邦歐洲"
+    expense_ratio: 0.0103
+    # 1.03% | MoneyDJ 總管理費用率（2026/03 資料）
+    # 查詢：https://www.moneydj.com/ETF/X/Basic/Basic0004.xdjhtm?etfid=00709.TW
+
+  - ticker: "00645"
+    exchange: TWSE
+    name: "富邦日本"
+    expense_ratio: 0.0076
+    # 0.76% | MoneyDJ 總管理費用率（2026/03 資料）
+    # 查詢：https://www.moneydj.com/ETF/X/Basic/Basic0004.xdjhtm?etfid=00645.TW
+
+  - ticker: "00752"
+    exchange: TWSE
+    name: "中信中國50"
+    expense_ratio: 0.0114
+    # 1.14% | MoneyDJ 總管理費用率（待確認，請手動更新）
+    # 查詢：https://www.moneydj.com/ETF/X/Basic/Basic0004.xdjhtm?etfid=00752.TW
+
+# ============================================================
+# 投資組合比較
+# allocations 的比例總和請確認 = 1.0
+# ============================================================
+# 以下為範例配置，請依個人需求自行調整
+portfolios:
+  - name: "全球股市"
+    description: "單一 ETF 投資全球股市"
+    allocations:
+      VT: 1.0
+
+  - name: "股6債4"
+    description: "全球股市搭配美國中期公債"
+    allocations:
+      VT: 0.6
+      IEF: 0.4
+
+  - name: "台美平衡"
+    description: "台股與美股 ETF 搭配，債券以台幣計價的美債 ETF 為主"
+    allocations:
+      VT: 0.4
+      "0050": 0.2
+      "00646": 0.2
+      "00679B": 0.2
