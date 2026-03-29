@@ -1,2 +1,12 @@
 .claude/settings.local.json
 reports/*
+
+# System
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Data
+data/etf.duckdb
