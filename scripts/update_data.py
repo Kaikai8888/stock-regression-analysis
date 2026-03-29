@@ -214,16 +214,32 @@ def fetchTwoEtfIncremental(ticker: str, since) -> pd.DataFrame:
 
 
 def fetchTwseEtfIncremental(ticker: str, since) -> pd.DataFrame:
+    startStr = since.isoformat() if (since and hasattr(since, "isoformat")) else None
+    try:
+        hist = yf.Ticker(f"{ticker}.TW").history(
+            start=startStr, period=("max" if startStr is None else None), auto_adjust=True
+        )
+        if not hist.empty:
+            hist = hist.reset_index()
+            hist.columns = [c.lower() for c in hist.columns]
+            hist["date"] = pd.to_datetime(hist["date"]).dt.date
+            cols = [c for c in ["date", "open", "high", "low", "close", "volume"] if c in hist.columns]
+            df = hist[cols].dropna(subset=["close"])
+            if since:
+                df = df[df["date"] > since]
+            if not df.empty:
+                return df.reset_index(drop=True)
+    except Exception:
+        pass
+
+    # 備用：TWSE API
     if since is None:
         return fetchTwseViaApi(ticker, startYear=2010)
 
     startYear = since.year if hasattr(since, "year") else int(str(since)[:4])
-    startMonth = since.month if hasattr(since, "month") else int(str(since)[5:7])
-
     df = fetchTwseViaApi(ticker, startYear=startYear)
     if df.empty:
         return df
-
     df["date"] = pd.to_datetime(df["date"]).dt.date if df["date"].dtype == object else df["date"]
     if since:
         df = df[df["date"] > since]

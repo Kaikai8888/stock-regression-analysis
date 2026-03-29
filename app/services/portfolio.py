@@ -160,7 +160,7 @@ def computePortfolioStats(cumReturnsSeries: list) -> dict:
 
     totalReturn = (values.iloc[-1] / values.iloc[0]) - 1
     nDays = len(values)
-    nYears = nDays / 252
+    nYears = nDays / 365.25
     cagr = (1 + totalReturn) ** (1 / nYears) - 1 if nYears > 0 else 0
     volatility = dailyReturns.std() * np.sqrt(252)
     sharpe = (cagr / volatility) if volatility > 0 else 0

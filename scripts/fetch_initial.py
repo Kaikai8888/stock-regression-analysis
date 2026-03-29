@@ -210,18 +210,30 @@ def fetchTwseEtfs(conn, etfList: list):
 
 def fetchTwseEtfHistory(ticker: str) -> pd.DataFrame:
     """
-    主要策略：twstock 函式庫
-    備用策略：直接呼叫 TWSE STOCK_DAY API 逐月爬取
+    主要策略：yfinance TICKER.TW（auto_adjust=True，已還原股票分割）
+    備用策略：twstock 函式庫 → TWSE STOCK_DAY API
     """
-    # 先嘗試 twstock
+    # 優先使用 yfinance，取得還原分割後的歷史價格
+    try:
+        hist = yf.Ticker(f"{ticker}.TW").history(period="max", auto_adjust=True)
+        if not hist.empty:
+            hist = hist.reset_index()
+            hist.columns = [c.lower() for c in hist.columns]
+            hist["date"] = pd.to_datetime(hist["date"]).dt.date
+            cols = [c for c in ["date", "open", "high", "low", "close", "volume"] if c in hist.columns]
+            df = hist[cols].dropna(subset=["close"])
+            if not df.empty:
+                return df
+    except Exception:
+        pass
+
+    # 備用：twstock
     try:
         import twstock
         stock = twstock.Stock(ticker)
-        # twstock 的 fetch_from 會從指定年月爬到今天
-        # 取得上市日期（若有）
-        inceptionYear = 2010  # 保守預設；twstock 會限制不存在的日期
+        inceptionYear = 2010
         if hasattr(stock, "realtime") and stock.data:
-            pass  # data 已載入
+            pass
         else:
             stock.fetch_from(inceptionYear, 1)
         records = stock.data
@@ -242,7 +254,7 @@ def fetchTwseEtfHistory(ticker: str) -> pd.DataFrame:
     except Exception:
         pass
 
-    # 備用：TWSE STOCK_DAY API 逐月爬取
+    # 最終備用：TWSE STOCK_DAY API 逐月爬取
     return fetchTwseViaApi(ticker)
 
 
