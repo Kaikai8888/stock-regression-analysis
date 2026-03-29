@@ -122,6 +122,13 @@ def main():
         print(f"配息資料：{len(dividendsDf)} 筆（{dividendsDf['ticker'].nunique() if not dividendsDf.empty else 0} 支 ETF）")
         divCalendars = buildDividendCalendars(allTickers, dividendsDf, fxSeries, earliestDate, today)
 
+        feeConfig = config.get("dca", {}).get("fees", None)
+        if feeConfig:
+            tw = feeConfig.get("tw", {})
+            us = feeConfig.get("us", {})
+            print(f"手續費設定：台股 {tw.get('fee_twd', 0)} TWD/筆（最低 {tw.get('min_investment_twd', 0)} TWD）｜"
+                  f"美股 {us.get('fee_usd', 0)} USD/筆（最低 {us.get('min_investment_usd', 0)} USD）")
+
         allResults    = []
         allDivResults = []
         for portfolio in config["portfolios"]:
@@ -129,12 +136,14 @@ def main():
             result = analyzePortfolio(
                 portfolio, etfInfoMap, pricesTwd, trackingDf,
                 monthlyAmount, nthDay, today, earliestDate,
+                feeConfig=feeConfig, fxSeries=fxSeries,
             )
             allResults.append(result)
 
             divResult = analyzePortfolioWithDividends(
                 portfolio, pricesTwd, divCalendars,
                 monthlyAmount, nthDay, today, earliestDate,
+                etfInfoMap=etfInfoMap, feeConfig=feeConfig, fxSeries=fxSeries,
             )
             allDivResults.append(divResult)
             print("完成")
@@ -474,6 +483,48 @@ def getMonthlyInvestmentDates(
     return investDates
 
 
+def _getFxAtDate(fxSeries: pd.Series, ts: pd.Timestamp) -> float:
+    """從 fxSeries 取得特定日期的 USD→TWD 匯率（前向填充）。"""
+    if fxSeries is None or fxSeries.empty:
+        return 31.0   # 備用預設值
+    idx = fxSeries.index.searchsorted(ts, side="right") - 1
+    return float(fxSeries.iloc[max(idx, 0)])
+
+
+def _applyFee(
+    investAmountTwd: float,
+    currency: str,
+    feeConfig: dict | None,
+    fxRate: float,
+) -> tuple[float, float]:
+    """
+    套用手續費並檢查最低申購額。
+
+    回傳 (淨投入金額 TWD, 手續費 TWD)。
+    若低於最低申購額，回傳 (0.0, 0.0) 表示跳過此筆。
+    """
+    if not feeConfig:
+        return investAmountTwd, 0.0
+
+    if currency == "TWD":
+        cfg = feeConfig.get("tw", {})
+        feeTwd = cfg.get("fee_twd", 0.0)
+        minTwd = cfg.get("min_investment_twd", 0.0)
+    else:  # USD
+        cfg = feeConfig.get("us", {})
+        feeTwd = cfg.get("fee_usd", 0.0) * fxRate
+        minTwd = cfg.get("min_investment_usd", 0.0) * fxRate
+
+    if investAmountTwd < minTwd:
+        return 0.0, 0.0
+
+    netAmount = investAmountTwd - feeTwd
+    if netAmount <= 0:
+        return 0.0, 0.0
+
+    return netAmount, feeTwd
+
+
 def runDcaSimulation(
     portfolio: dict,
     pricesTwd: pd.DataFrame,
@@ -481,12 +532,16 @@ def runDcaSimulation(
     nthDay: int,
     startDate: date,
     endDate: date,
+    etfInfoMap: dict | None = None,
+    feeConfig: dict | None = None,
+    fxSeries: pd.Series | None = None,
 ) -> tuple[list, dict] | tuple[None, None]:
     """
     模擬定期定額，回傳 (transactions, summary)。
 
     transactions: [{date, etfs: {ticker: {amount, price, units, cumUnits}}}]
-    summary: {total_invested, final_value, start, end, num_months, cashflow_dates, cashflow_amounts}
+    summary: {total_invested, total_fees, final_value, start, end, num_months,
+              cashflow_dates, cashflow_amounts}
     """
     tickers = list(portfolio["allocations"].keys())
     allocations = portfolio["allocations"]
@@ -509,6 +564,7 @@ def runDcaSimulation(
     transactions: list[dict] = []
     cashflowDates: list[date] = []
     cashflowAmounts: list[float] = []
+    totalFees = 0.0
 
     for d in investDates:
         dt = pd.Timestamp(d)
@@ -517,6 +573,7 @@ def runDcaSimulation(
         if loc < 0:
             continue
         actualDt = pricePivot.index[loc]
+        fxRate = _getFxAtDate(fxSeries, actualDt) if fxSeries is not None else 31.0
 
         row: dict[str, dict] = {}
         for ticker in validTickers:
@@ -524,11 +581,17 @@ def runDcaSimulation(
             if pd.isna(price) or price <= 0:
                 continue
             weight = allocations[ticker] / totalWeight
-            investAmount = monthlyAmount * weight
-            units = investAmount / price
+            grossAmount = monthlyAmount * weight
+            currency = (etfInfoMap or {}).get(ticker, {}).get("currency", "TWD")
+            netAmount, feeTwd = _applyFee(grossAmount, currency, feeConfig, fxRate)
+            if netAmount <= 0:
+                continue
+            totalFees += feeTwd
+            units = netAmount / price
             unitsPerTicker[ticker] += units
             row[ticker] = {
-                "amount":   round(investAmount, 2),
+                "amount":   round(grossAmount, 2),
+                "fee":      round(feeTwd, 4),
                 "price":    round(float(price), 4),
                 "units":    round(units, 6),
                 "cumUnits": round(unitsPerTicker[ticker], 6),
@@ -555,6 +618,7 @@ def runDcaSimulation(
 
     summary = {
         "total_invested":    totalInvested,
+        "total_fees":        round(totalFees, 0),
         "final_value":       finalValue,
         "start":             transactions[0]["date"],
         "end":               transactions[-1]["date"],
@@ -573,10 +637,14 @@ def runDcaWithDividends(
     nthDay: int,
     startDate: date,
     endDate: date,
+    etfInfoMap: dict | None = None,
+    feeConfig: dict | None = None,
+    fxSeries: pd.Series | None = None,
 ) -> tuple[list, dict] | tuple[None, None]:
     """
     模擬含股息再投資的定期定額。
     與 runDcaSimulation 邏輯相同，但在每個配息除息日自動將股息買回股份。
+    股息再投資不另收手續費。
 
     divCalendars: buildDividendCalendars() 的回傳值。
     """
@@ -601,6 +669,7 @@ def runDcaWithDividends(
     cashflowDates:   list[date]  = []
     cashflowAmounts: list[float] = []
     totalDivIncomeTwd = 0.0
+    totalFees         = 0.0
 
     # 建立合併配息日曆：{ex_date: {ticker: amount_twd}}
     combined_divs: dict[date, dict[str, float]] = {}
@@ -614,23 +683,28 @@ def runDcaWithDividends(
     div_ptr = 0
 
     def _processDividends(up_to_date: date) -> None:
-        """處理所有 ≤ up_to_date 且尚未處理的配息事件。"""
-        nonlocal div_ptr, totalDivIncomeTwd
+        """處理所有 ≤ up_to_date 且尚未處理的配息事件（股息再投資亦收手續費）。"""
+        nonlocal div_ptr, totalDivIncomeTwd, totalFees
         while div_ptr < len(sorted_div_dates) and sorted_div_dates[div_ptr] <= up_to_date:
-            ex_date      = sorted_div_dates[div_ptr]
+            ex_date        = sorted_div_dates[div_ptr]
             ticker_amounts = combined_divs[ex_date]
-            ex_ts        = pd.Timestamp(ex_date)
-            loc          = pricePivot.index.searchsorted(ex_ts, side="right") - 1
+            ex_ts          = pd.Timestamp(ex_date)
+            loc            = pricePivot.index.searchsorted(ex_ts, side="right") - 1
             if loc >= 0:
+                fx_at_ex = _getFxAtDate(fxSeries, ex_ts) if fxSeries is not None else 31.0
                 for t, div_amt in ticker_amounts.items():
                     if unitsPerTicker.get(t, 0) <= 0 or div_amt <= 0:
                         continue
                     price = float(pricePivot.iloc[loc][t]) if t in pricePivot.columns else float("nan")
                     if pd.isna(price) or price <= 0:
                         continue
-                    div_income  = unitsPerTicker[t] * div_amt
+                    div_income = unitsPerTicker[t] * div_amt
                     totalDivIncomeTwd += div_income
-                    unitsPerTicker[t] += div_income / price
+                    currency = (etfInfoMap or {}).get(t, {}).get("currency", "TWD")
+                    netIncome, feeTwd = _applyFee(div_income, currency, feeConfig, fx_at_ex)
+                    totalFees += feeTwd
+                    if netIncome > 0:
+                        unitsPerTicker[t] += netIncome / price
             div_ptr += 1
 
     for d in investDates:
@@ -642,6 +716,7 @@ def runDcaWithDividends(
         if loc < 0:
             continue
         actualDt = pricePivot.index[loc]
+        fxRate = _getFxAtDate(fxSeries, actualDt) if fxSeries is not None else 31.0
 
         row: dict[str, dict] = {}
         for t in validTickers:
@@ -649,11 +724,17 @@ def runDcaWithDividends(
             if pd.isna(price) or price <= 0:
                 continue
             weight = allocations[t] / totalWeight
-            investAmount = monthlyAmount * weight
-            units = investAmount / price
+            grossAmount = monthlyAmount * weight
+            currency = (etfInfoMap or {}).get(t, {}).get("currency", "TWD")
+            netAmount, feeTwd = _applyFee(grossAmount, currency, feeConfig, fxRate)
+            if netAmount <= 0:
+                continue
+            totalFees += feeTwd
+            units = netAmount / price
             unitsPerTicker[t] += units
             row[t] = {
-                "amount":   round(investAmount, 2),
+                "amount":   round(grossAmount, 2),
+                "fee":      round(feeTwd, 4),
                 "price":    round(float(price), 4),
                 "units":    round(units, 6),
                 "cumUnits": round(unitsPerTicker[t], 6),
@@ -682,6 +763,7 @@ def runDcaWithDividends(
 
     summary = {
         "total_invested":    totalInvested,
+        "total_fees":        round(totalFees, 0),
         "final_value":       finalValue,
         "total_div_income":  round(totalDivIncomeTwd, 0),
         "start":             transactions[0]["date"],
@@ -756,6 +838,7 @@ def computeDcaStats(summary: dict) -> dict | None:
 
     return {
         "total_invested":   round(invested, 0),
+        "total_fees":       summary.get("total_fees", 0),
         "final_value":      round(finalValue, 0),
         "total_return":     round(totalReturn * 100, 2),
         "simple_cagr":      round(simpleCagr * 100, 2),
@@ -776,6 +859,9 @@ def analyzePortfolioWithDividends(
     nthDay: int,
     today: date,
     earliestDate: date,
+    etfInfoMap: dict | None = None,
+    feeConfig: dict | None = None,
+    fxSeries: pd.Series | None = None,
 ) -> dict:
     """
     對單一投資組合計算各時間區間的含股息再投資 DCA 績效。
@@ -791,6 +877,7 @@ def analyzePortfolioWithDividends(
         _txns, summary = runDcaWithDividends(
             portfolio, pricesTwd, divCalendars,
             monthlyAmount, nthDay, startDate, today,
+            etfInfoMap=etfInfoMap, feeConfig=feeConfig, fxSeries=fxSeries,
         )
         result["periods"][periodName] = computeDcaStats(summary)
 
@@ -813,6 +900,8 @@ def analyzePortfolio(
     nthDay: int,
     today: date,
     earliestDate: date,
+    feeConfig: dict | None = None,
+    fxSeries: pd.Series | None = None,
 ) -> dict:
     """對單一投資組合計算各時間區間的 DCA 績效與追蹤誤差分析。"""
     result: dict = {
@@ -825,7 +914,8 @@ def analyzePortfolio(
     for periodName, delta in PERIODS:
         startDate = earliestDate if delta is None else today - delta
         _txns, summary = runDcaSimulation(
-            portfolio, pricesTwd, monthlyAmount, nthDay, startDate, today
+            portfolio, pricesTwd, monthlyAmount, nthDay, startDate, today,
+            etfInfoMap=etfInfoMap, feeConfig=feeConfig, fxSeries=fxSeries,
         )
         result["periods"][periodName] = computeDcaStats(summary)
 
@@ -1037,10 +1127,13 @@ def writeCagrSheet(ws, allResults: list, monthlyAmount: float, nthDay: int):
                         c.alignment = Alignment(horizontal="right")
                         c.fill = PatternFill("solid", fgColor=COLOR_POS if val >= 0 else COLOR_NEG)
                     if key == "irr" and stats and stats.get("start"):
+                        fees = stats.get("total_fees", 0) or 0
+                        fee_line = f"\n總手續費：{fees:,.0f} TWD" if fees > 0 else ""
                         c.comment = Comment(
                             f"期間：{stats['start']} → {stats['end']}\n"
                             f"投入月數：{stats['num_months']}月（{stats['years']}年）\n"
-                            f"總投入：{stats['total_invested']:,.0f} TWD\n"
+                            f"總投入：{stats['total_invested']:,.0f} TWD"
+                            f"{fee_line}\n"
                             f"最終淨值：{stats['final_value']:,.0f} TWD",
                             "auto"
                         )
@@ -1073,7 +1166,7 @@ def writeDetailSheet(ws, allResults: list, monthlyAmount: float, nthDay: int):
     ws.row_dimensions[1].height = 28
 
     headers = ["投資組合", "期間", "投入月數", "投入年數", "總投入 (TWD)",
-               "最終淨值 (TWD)", "總報酬率", "IRR（金額加權）", "簡單年化 CAGR"]
+               "總手續費 (TWD)", "最終淨值 (TWD)", "總報酬率", "IRR（金額加權）", "簡單年化 CAGR"]
     for col, h in enumerate(headers, start=1):
         _headerCell(ws, 2, col, h, bgColor=COLOR_SUBHEAD, wrap=True)
     ws.row_dimensions[2].height = 30
@@ -1094,7 +1187,7 @@ def writeDetailSheet(ws, allResults: list, monthlyAmount: float, nthDay: int):
             ws.cell(row=row, column=2).fill = altFill
 
             if stats is None:
-                for col in range(3, 10):
+                for col in range(3, 11):
                     c = ws.cell(row=row, column=col, value="資料不足")
                     c.alignment = Alignment(horizontal="center")
                     c.font = Font(color="888888", italic=True, size=9)
@@ -1110,16 +1203,17 @@ def writeDetailSheet(ws, allResults: list, monthlyAmount: float, nthDay: int):
                         c.fill = PatternFill("solid", fgColor=COLOR_POS if is_good else COLOR_NEG)
                     return c
 
-                _set(3, stats.get("num_months"),   "#,##0").alignment = Alignment(horizontal="right")
-                _set(4, stats.get("years"),        "0.0").alignment = Alignment(horizontal="right")
+                _set(3, stats.get("num_months"),    "#,##0").alignment = Alignment(horizontal="right")
+                _set(4, stats.get("years"),         "0.0").alignment = Alignment(horizontal="right")
                 _set(5, stats.get("total_invested"), "#,##0").alignment = Alignment(horizontal="right")
-                _set(6, stats.get("final_value"),    "#,##0").alignment = Alignment(horizontal="right")
+                _set(6, stats.get("total_fees"),     "#,##0").alignment = Alignment(horizontal="right")
+                _set(7, stats.get("final_value"),    "#,##0").alignment = Alignment(horizontal="right")
 
                 tr = stats.get("total_return")
-                _colorCell(ws, row, 7, tr / 100 if tr is not None else None)
+                _colorCell(ws, row, 8, tr / 100 if tr is not None else None)
 
                 irr = stats.get("irr")
-                irrCell = _colorCell(ws, row, 8, irr / 100 if irr is not None else None)
+                irrCell = _colorCell(ws, row, 9, irr / 100 if irr is not None else None)
                 if stats.get("start"):
                     irrCell.comment = Comment(
                         f"起始：{stats['start']}\n結束：{stats['end']}",
@@ -1127,17 +1221,17 @@ def writeDetailSheet(ws, allResults: list, monthlyAmount: float, nthDay: int):
                     )
 
                 sc = stats.get("simple_cagr")
-                _colorCell(ws, row, 9, sc / 100 if sc is not None else None)
+                _colorCell(ws, row, 10, sc / 100 if sc is not None else None)
 
             ws.row_dimensions[row].height = 18
             row += 1
 
         # 空白分隔行
-        for col in range(1, 10):
+        for col in range(1, 11):
             ws.cell(row=row, column=col).fill = PatternFill("solid", fgColor="F0F0F0")
         row += 1
 
-    widths = [16, 10, 10, 10, 18, 18, 12, 16, 16]
+    widths = [16, 10, 10, 10, 18, 15, 18, 12, 16, 16]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -1445,7 +1539,7 @@ def writeDivDetailSheet(
     periodNames = [p[0] for p in PERIODS]
 
     # 大標題
-    lastCol = get_column_letter(10)
+    lastCol = get_column_letter(11)
     ws.merge_cells(f"A1:{lastCol}1")
     ws["A1"] = (
         f"定期定額含股息再投資詳細統計"
@@ -1469,7 +1563,8 @@ def writeDivDetailSheet(
 
     # 表頭
     headers = ["投資組合", "期間", "投入月數", "投入年數", "總投入 (TWD)",
-               "股息再投入累計 (TWD)", "最終淨值 (TWD)", "總報酬率", "IRR（含息）", "簡單CAGR（含息）"]
+               "總手續費 (TWD)", "股息再投入累計 (TWD)", "最終淨值 (TWD)",
+               "總報酬率", "IRR（含息）", "簡單CAGR（含息）"]
     for col, h in enumerate(headers, start=1):
         _headerCell(ws, 3, col, h, bgColor=COLOR_SUBHEAD, wrap=True)
     ws.row_dimensions[3].height = 32
@@ -1490,7 +1585,7 @@ def writeDivDetailSheet(
             ws.cell(row=row, column=2).fill = altFill
 
             if stats is None:
-                for col_ in range(3, 11):
+                for col_ in range(3, 12):
                     c = ws.cell(row=row, column=col_, value="資料不足")
                     c.alignment = Alignment(horizontal="center")
                     c.font      = Font(color="888888", italic=True, size=9)
@@ -1509,24 +1604,25 @@ def writeDivDetailSheet(
                 _set(3, stats.get("num_months"),    "#,##0").alignment = Alignment(horizontal="right")
                 _set(4, stats.get("years"),         "0.0").alignment   = Alignment(horizontal="right")
                 _set(5, stats.get("total_invested"), "#,##0").alignment = Alignment(horizontal="right")
+                _set(6, stats.get("total_fees"),     "#,##0").alignment = Alignment(horizontal="right")
                 div_income = stats.get("total_div_income", 0)
-                _set(6, div_income, "#,##0").alignment = Alignment(horizontal="right")
-                _set(7, stats.get("final_value"),   "#,##0").alignment = Alignment(horizontal="right")
+                _set(7, div_income, "#,##0").alignment = Alignment(horizontal="right")
+                _set(8, stats.get("final_value"),   "#,##0").alignment = Alignment(horizontal="right")
 
                 tr = stats.get("total_return")
-                _colorCell(ws, row, 8, tr / 100 if tr is not None else None)
+                _colorCell(ws, row, 9, tr / 100 if tr is not None else None)
 
                 irr = stats.get("irr")
-                _colorCell(ws, row, 9, irr / 100 if irr is not None else None)
+                _colorCell(ws, row, 10, irr / 100 if irr is not None else None)
 
                 sc = stats.get("simple_cagr")
-                _colorCell(ws, row, 10, sc / 100 if sc is not None else None)
+                _colorCell(ws, row, 11, sc / 100 if sc is not None else None)
 
             ws.row_dimensions[row].height = 18
             row += 1
 
         # 空白分隔行
-        for col_ in range(1, 11):
+        for col_ in range(1, 12):
             ws.cell(row=row, column=col_).fill = PatternFill("solid", fgColor="F0F0F0")
         row += 1
 
@@ -1582,7 +1678,7 @@ def writeDivDetailSheet(
         row += 1
 
     # 欄寬
-    widths = [18, 18, 10, 12, 16, 14, 12, 14, 14, 16]
+    widths = [18, 10, 10, 10, 18, 15, 18, 18, 12, 14, 16]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
