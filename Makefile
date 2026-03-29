@@ -7,7 +7,7 @@ PYTHON := python3
 
 .PHONY: help run init update update-watch expense expense-update tracking-diff dividends \
         pipeline pipeline-skip-fetch pipeline-skip-expense pipeline-force \
-        report dca db-status db-prices
+        report dca db-status db-prices vt-country
 
 # ── 預設：顯示說明 ──────────────────────────────────────────
 help:
@@ -25,6 +25,7 @@ help:
 	@echo "  make expense-update      從 MoneyDJ 抓取費用率並更新 config.yaml"
 	@echo "  make tracking-diff       抓取所有 ETF 季度追蹤差額（已有上季資料則跳過）"
 	@echo "  make dividends           抓取所有 ETF 配息紀錄（近 45 天有資料則跳過）"
+	@echo "  make vt-country          從 MoneyDJ 抓取 VT 國家佔比，列出含中國／剔除中國的相對佔比"
 	@echo ""
 	@echo "【Pipeline 完整流程】"
 	@echo "  make pipeline            完整流程：追蹤差額 → 配息 → 資料更新 → 費用率 → Excel 報表"
@@ -77,6 +78,10 @@ tracking-diff:
 # 從 MoneyDJ 抓取所有 ETF 配息紀錄（近 45 天有資料則跳過）
 dividends:
 	$(PYTHON) scripts/fetch_dividends.py
+
+# 從 MoneyDJ 抓取 VT 國家佔比，列出含中國／剔除中國的相對佔比
+vt-country:
+	$(PYTHON) scripts/fetch_vt_country_allocation.py
 
 # ── Pipeline ─────────────────────────────────────────────────
 

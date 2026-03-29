@@ -38,6 +38,7 @@ make expense-update               # Update config.yaml with latest ratios
 # Standalone data fetches
 make tracking-diff                # Fetch quarterly tracking diffs from MoneyDJ
 make dividends                    # Fetch dividend records from MoneyDJ
+make vt-country                   # Fetch VT country allocation from MoneyDJ Basic0007; print 美/日/歐/中/台 breakdown + relative weights
 ```
 
 ## Architecture
@@ -88,6 +89,8 @@ Fee logic (`_applyFee`): reads `config.yaml dca.fees`; applied to every purchase
 Dividend reinvestment logic (`buildDividendCalendars`): MoneyDJ only provides the last 2 years of data. For years without actual records, the average annual per-unit dividend across all years with data is used as an estimate, distributed at the typical payment months (e.g. January & July for 0050). Estimated events are flagged `is_estimated=True`; the Excel sheets annotate this clearly.
 
 **`scripts/fetch_dividends.py`** — Fetches ETF dividend records from MoneyDJ Basic0005 (last 2 years). Taiwan ETFs use `etfid=TICKER.TW`; US ETFs use `etfid=TICKER`. Skips if DB already has data within the last 45 days.
+
+**`scripts/fetch_vt_country_allocation.py`** — Fetches VT country allocation from MoneyDJ Basic0007 (`持股分佈(依區域)`). Country names are in Traditional Chinese. Aggregates into 美國, 日本, 歐洲 (21 countries incl. 英國), 中國, 台灣, and 其他. Prints three breakdowns: (1) raw weights incl. 其他, (2) relative weights excluding 其他, (3) relative weights excluding 其他 and 中國. `calcRelative()` accepts an `exclude` set for flexible region filtering.
 
 **`scripts/pipeline.py`** — Orchestrates the full 6-step pipeline in one command:
 1. Fetch tracking diffs (`--skip-tracking-diff` to skip)
