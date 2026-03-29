@@ -46,6 +46,16 @@ DDL_STATEMENTS = [
         PRIMARY KEY (date, from_ccy, to_ccy)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS etf_tracking_diff (
+        ticker           VARCHAR NOT NULL,
+        quarter          VARCHAR NOT NULL,  -- 格式：'2025Q4'
+        market_return    DOUBLE,            -- 市價季報酬率 (%)
+        benchmark_return DOUBLE,            -- 基準指數漲跌幅 (%)
+        diff             DOUBLE,            -- 差額 = market_return - benchmark_return (%)
+        PRIMARY KEY (ticker, quarter)
+    )
+    """,
 ]
 
 

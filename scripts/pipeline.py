@@ -1,15 +1,17 @@
 """
 一鍵執行完整分析流程：
 
-  步驟 1  初始化 / 增量更新歷史股價資料（DuckDB）
-  步驟 2  從 MoneyDJ 取得最新台灣 ETF 費用率，更新 config.yaml
-  步驟 3  將 config.yaml 費用率同步至 etf_info 資料表
-  步驟 4  計算各投資組合 × 各時間區間的年化報酬率，輸出 xlsx 報表
+  步驟 1  從 MoneyDJ 抓取所有 ETF 季度追蹤差額（已有上季資料則跳過）
+  步驟 2  初始化 / 增量更新歷史股價資料（DuckDB）
+  步驟 3  從 MoneyDJ 取得最新台灣 ETF 費用率，更新 config.yaml
+  步驟 4  將 config.yaml 費用率同步至 etf_info 資料表
+  步驟 5  計算各投資組合 × 各時間區間的年化報酬率，輸出 xlsx 報表
 
 執行方式：
   python scripts/pipeline.py                        # 完整流程
   python scripts/pipeline.py --skip-fetch           # 跳過股價抓取（DB 已是最新時使用）
   python scripts/pipeline.py --skip-expense         # 跳過費用率更新
+  python scripts/pipeline.py --skip-tracking-diff   # 跳過追蹤差額抓取
   python scripts/pipeline.py --output my_report.xlsx
   python scripts/pipeline.py --force-initial        # 強制重跑 fetch_initial（完整重抓）
 """
@@ -38,10 +40,11 @@ REPORTS_DIR = ROOT / "reports"
 
 def main():
     parser = argparse.ArgumentParser(description="ETF 投資組合分析一鍵執行")
-    parser.add_argument("--skip-fetch",    action="store_true", help="跳過股價資料更新")
-    parser.add_argument("--skip-expense",  action="store_true", help="跳過費用率更新")
-    parser.add_argument("--force-initial", action="store_true", help="強制完整重抓所有歷史資料")
-    parser.add_argument("--output",        type=str,            help="報表輸出路徑")
+    parser.add_argument("--skip-fetch",          action="store_true", help="跳過股價資料更新")
+    parser.add_argument("--skip-expense",        action="store_true", help="跳過費用率更新")
+    parser.add_argument("--skip-tracking-diff",  action="store_true", help="跳過追蹤差額抓取")
+    parser.add_argument("--force-initial",       action="store_true", help="強制完整重抓所有歷史資料")
+    parser.add_argument("--output",              type=str,            help="報表輸出路徑")
     args = parser.parse_args()
 
     REPORTS_DIR.mkdir(exist_ok=True)
@@ -52,29 +55,36 @@ def main():
     startTime = time.time()
     printBanner()
 
-    # ── Step 1：股價資料 ──────────────────────────────────────
+    # ── Step 1：季度追蹤差額 ─────────────────────────────────
+    if not args.skip_tracking_diff:
+        step("1", "從 MoneyDJ 抓取所有 ETF 季度追蹤差額")
+        runScript("scripts/fetch_tracking_diff.py")
+    else:
+        print("  [步驟 1] 已跳過（--skip-tracking-diff）\n")
+
+    # ── Step 2：股價資料 ──────────────────────────────────────
     if not args.skip_fetch:
-        step("1", "股價資料初始化 / 增量更新")
+        step("2", "股價資料初始化 / 增量更新")
         if args.force_initial or not dbHasData():
             runScript("scripts/fetch_initial.py", "初次抓取全部歷史資料（耗時較長）")
         else:
             runScript("scripts/update_data.py", label="增量更新至最新交易日")
     else:
-        print("  [步驟 1] 已跳過（--skip-fetch）\n")
+        print("  [步驟 2] 已跳過（--skip-fetch）\n")
 
-    # ── Step 2：費用率更新 ────────────────────────────────────
+    # ── Step 3：費用率更新 ────────────────────────────────────
     if not args.skip_expense:
-        step("2", "從 MoneyDJ 更新台灣 ETF 費用率 → config.yaml")
+        step("3", "從 MoneyDJ 更新台灣 ETF 費用率 → config.yaml")
         runScript("scripts/fetch_expense_ratios.py", "--update")
     else:
-        print("  [步驟 2] 已跳過（--skip-expense）\n")
+        print("  [步驟 3] 已跳過（--skip-expense）\n")
 
-    # ── Step 3：費用率同步至 DB ───────────────────────────────
-    step("3", "將 config.yaml 費用率同步至 etf_info 資料表")
+    # ── Step 4：費用率同步至 DB ───────────────────────────────
+    step("4", "將 config.yaml 費用率同步至 etf_info 資料表")
     syncExpenseRatiosToDB()
 
-    # ── Step 4：報酬率分析 ────────────────────────────────────
-    step("4", f"計算投資組合報酬率 → {outputPath.name}")
+    # ── Step 5：報酬率分析 ────────────────────────────────────
+    step("5", f"計算投資組合報酬率 → {outputPath.name}")
     runScript("scripts/analyze_portfolios.py", "--output", str(outputPath))
 
     elapsed = time.time() - startTime
