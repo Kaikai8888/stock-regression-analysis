@@ -159,7 +159,9 @@ def computePortfolioStats(cumReturnsSeries: list) -> dict:
     dailyReturns = values.pct_change().dropna()
 
     totalReturn = (values.iloc[-1] / values.iloc[0]) - 1
-    nDays = len(values)
+    from datetime import date as _date
+    nDays = (_date.fromisoformat(cumReturnsSeries[-1]["date"])
+             - _date.fromisoformat(cumReturnsSeries[0]["date"])).days
     nYears = nDays / 365.25
     cagr = (1 + totalReturn) ** (1 / nYears) - 1 if nYears > 0 else 0
     volatility = dailyReturns.std() * np.sqrt(252)
