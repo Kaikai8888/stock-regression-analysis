@@ -7,7 +7,7 @@ PYTHON := python3
 
 .PHONY: help run init update update-watch expense expense-update tracking-diff \
         pipeline pipeline-skip-fetch pipeline-skip-expense pipeline-force \
-        report db-status db-prices
+        report dca db-status db-prices
 
 # ── 預設：顯示說明 ──────────────────────────────────────────
 help:
@@ -33,6 +33,7 @@ help:
 	@echo "                           （日常使用）"
 	@echo "  make pipeline-force      強制重抓所有歷史資料（完整重建 DB）"
 	@echo "  make report              只產出 Excel 報告，不更新任何資料"
+	@echo "  make dca                 定期定額分析（互動輸入每月金額與投資日）→ Excel 報表"
 	@echo ""
 	@echo "【Web App】"
 	@echo "  make run                 啟動 Flask 開發伺服器（http://localhost:5000）"
@@ -93,6 +94,10 @@ pipeline-force:
 # 只產出 Excel 報告（不抓資料、不更新費用率）
 report:
 	$(PYTHON) scripts/analyze_portfolios.py
+
+# 定期定額（DCA）分析報告（互動式輸入每月金額與投資日）
+dca:
+	$(PYTHON) scripts/dca_analysis.py
 
 # ── 資料庫查詢 ───────────────────────────────────────────────
 

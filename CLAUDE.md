@@ -23,6 +23,9 @@ make pipeline-skip-fetch          # Skip data fetch (use existing DB data)
 make pipeline-skip-expense        # Skip expense ratio fetch
 make pipeline-force               # Force full re-fetch from scratch
 
+# DCA analysis report
+make dca                          # Interactive: input monthly amount + nth trading day → Excel
+
 # Database inspection
 make db-status                    # Fetch status and last update dates per ticker
 make db-prices                    # Record counts and date ranges per ticker
@@ -47,11 +50,12 @@ yfinance / TWSE API / MoneyDJ
 
 **`config.yaml`** — Single source of truth for ETF universe (11 ETFs: 8 Taiwan + 3 US), 5 portfolios (weighted allocations), base currency (TWD), and benchmark (VT).
 
-**`app/db.py`** — DuckDB schema and connection management. The 4 tables:
+**`app/db.py`** — DuckDB schema and connection management. The 5 tables:
 - `etf_prices`: ticker, date, OHLCV, currency
 - `etf_info`: ticker, name, exchange, expense_ratio, inception_date
 - `fetch_status`: per-ticker fetch state and error tracking
 - `fx_rates`: USD→TWD daily historical rates
+- `etf_tracking_diff`: ticker, quarter (e.g. `2025Q4`), market_return, benchmark_return, diff (market − benchmark, %)
 
 **`app/services/regression.py`** — Beta, alpha (annualized), R², P-value vs benchmark; 60-day rolling beta.
 
@@ -61,6 +65,8 @@ yfinance / TWSE API / MoneyDJ
 - `charts.py` (`/api/prices/*`): raw prices, normalized (base=100), regression stats
 - `portfolio.py` (`/api/portfolio/*`): cumulative returns and summary stats for all portfolios
 - `info.py` (`/api/info/*`): ETF metadata and fetch status
+
+**`scripts/dca_analysis.py`** — Dollar-cost averaging (DCA) simulation. Prompts for monthly amount and N-th trading day, splits by portfolio weights, buys at actual TWD prices, computes IRR (Newton-Raphson XIRR) and simple CAGR per period. Also reports quarterly tracking-error impact (from `etf_tracking_diff`) per ETF and portfolio. Outputs `reports/dca_analysis_YYYY-MM-DD.xlsx` with 3 sheets: CAGR summary, period detail, tracking-error analysis.
 
 **`scripts/pipeline.py`** — Orchestrates the full 4-step pipeline in one command.
 

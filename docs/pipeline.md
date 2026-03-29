@@ -12,6 +12,9 @@ python scripts/pipeline.py --skip-expense   # 跳過費用率更新（非年底�
 # 只更新費用率 + 重新計算報告
 python scripts/pipeline.py --skip-fetch
 
+# 跳過追蹤差額抓取（上季資料已存在時也可加速執行）
+python scripts/pipeline.py --skip-tracking-diff
+
 # 指定輸出路徑
 python scripts/pipeline.py --output reports/Q1_2026.xlsx
 ```
@@ -24,20 +27,25 @@ python scripts/pipeline.py --output reports/Q1_2026.xlsx
 
 ```
 pipeline.py
-  ├── Step 1  股價資料初始化 / 增量更新
+  ├── Step 1  季度追蹤差額抓取
+  │           └── fetch_tracking_diff.py
+  │               來源：MoneyDJ「報酬走勢」頁籤（Basic0009）
+  │               儲存：etf_tracking_diff（已有上季資料則跳過）
+  │
+  ├── Step 2  股價資料初始化 / 增量更新
   │           ├── 首次 / --force-initial → fetch_initial.py（全量抓取，耗時 30~60 分鐘）
   │           └── 已有資料 → update_data.py --once（增量更新至最新交易日）
   │
-  ├── Step 2  台灣 ETF 費用率更新
+  ├── Step 3  台灣 ETF 費用率更新
   │           └── fetch_expense_ratios.py --update
   │               來源：MoneyDJ「總管理費用(%)」
   │               修改：config.yaml 的 expense_ratio 欄位
   │
-  ├── Step 3  費用率同步至 DuckDB
+  ├── Step 4  費用率同步至 DuckDB
   │           └── config.yaml → etf_info.expense_ratio
   │               確保分析腳本使用最新費用率
   │
-  └── Step 4  投資組合報酬率分析
+  └── Step 5  投資組合報酬率分析
               └── analyze_portfolios.py --output <path>
                   輸出：reports/portfolio_analysis_YYYY-MM-DD.xlsx
 ```
@@ -45,6 +53,27 @@ pipeline.py
 ---
 
 ## 各腳本說明
+
+### `scripts/fetch_tracking_diff.py`
+從 MoneyDJ 抓取所有 ETF（台灣 + 美股）的季度追蹤差額，寫入 DuckDB `etf_tracking_diff` 資料表。
+
+| 欄位 | 說明 |
+|------|------|
+| `market_return` | 市價季報酬率（%） |
+| `benchmark_return` | 基準指數漲跌幅（%） |
+| `diff` | 差額 = market_return − benchmark_return（%） |
+
+- **URL**：`Basic0009.xdjhtm?etfid={ticker}` （台灣 ETF 加 `.TW`，美股不加）
+- **跳過邏輯**：每次執行先判斷「上一個已完成季度」，DB 已有該季資料則跳過，否則抓取全部可用歷史季度並一次寫入
+- **上季判斷規則**：月份 1–3 → 上年 Q4；4–6 → 本年 Q1；7–9 → 本年 Q2；10–12 → 本年 Q3
+
+```bash
+python scripts/fetch_tracking_diff.py
+# 或
+make tracking-diff
+```
+
+---
 
 ### `scripts/fetch_initial.py`
 全量抓取所有 ETF 的歷史股價，寫入 DuckDB。
@@ -181,9 +210,10 @@ portfolios:
 | 資料表 | 說明 |
 |--------|------|
 | `etf_prices` | 每日 OHLCV，含幣別（TWD/USD） |
-| `etf_info` | ETF 基本資訊，含費用率（由 pipeline Step 3 同步） |
+| `etf_info` | ETF 基本資訊，含費用率（由 pipeline Step 4 同步） |
 | `fetch_status` | 各 ETF 最後爬取日期與狀態 |
 | `fx_rates` | USD→TWD 每日匯率 |
+| `etf_tracking_diff` | 各 ETF 季度追蹤差額（由 pipeline Step 1 更新） |
 
 ---
 
@@ -192,6 +222,7 @@ portfolios:
 | 時機 | 動作 |
 |------|------|
 | 每個交易日 | `python scripts/update_data.py --once` 或設 cron |
+| 每季結束後 | `make tracking-diff` 或 `make pipeline` 自動更新追蹤差額 |
 | 每年初（1~2月） | `python scripts/pipeline.py` 更新費用率並重新輸出報表 |
 | 新增 ETF 時 | 編輯 `config.yaml` → 執行 `python scripts/fetch_initial.py` |
 | US ETF 費率有異動 | 手動更新 `config.yaml` 的 `expense_ratio` 欄位 |
