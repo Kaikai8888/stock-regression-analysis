@@ -15,6 +15,9 @@ python scripts/pipeline.py --skip-fetch
 # 跳過追蹤差額抓取（上季資料已存在時也可加速執行）
 python scripts/pipeline.py --skip-tracking-diff
 
+# 跳過配息紀錄抓取（近 45 天內已更新時可加速執行）
+python scripts/pipeline.py --skip-dividends
+
 # 指定輸出路徑
 python scripts/pipeline.py --output reports/Q1_2026.xlsx
 ```
@@ -32,20 +35,26 @@ pipeline.py
   │               來源：MoneyDJ「報酬走勢」頁籤（Basic0009）
   │               儲存：etf_tracking_diff（已有上季資料則跳過）
   │
-  ├── Step 2  股價資料初始化 / 增量更新
+  ├── Step 2  ETF 配息紀錄抓取
+  │           └── fetch_dividends.py
+  │               來源：MoneyDJ「配息紀錄」頁籤（Basic0005）
+  │               儲存：etf_dividends（近 45 天有資料則跳過）
+  │               說明：僅提供近二年資料；無資料年份由 DCA 分析以均值估算
+  │
+  ├── Step 3  股價資料初始化 / 增量更新
   │           ├── 首次 / --force-initial → fetch_initial.py（全量抓取，耗時 30~60 分鐘）
   │           └── 已有資料 → update_data.py --once（增量更新至最新交易日）
   │
-  ├── Step 3  台灣 ETF 費用率更新
+  ├── Step 4  台灣 ETF 費用率更新
   │           └── fetch_expense_ratios.py --update
   │               來源：MoneyDJ「總管理費用(%)」
   │               修改：config.yaml 的 expense_ratio 欄位
   │
-  ├── Step 4  費用率同步至 DuckDB
+  ├── Step 5  費用率同步至 DuckDB
   │           └── config.yaml → etf_info.expense_ratio
   │               確保分析腳本使用最新費用率
   │
-  └── Step 5  投資組合報酬率分析
+  └── Step 6  投資組合報酬率分析
               └── analyze_portfolios.py --output <path>
                   輸出：reports/portfolio_analysis_YYYY-MM-DD.xlsx
 ```
@@ -53,6 +62,28 @@ pipeline.py
 ---
 
 ## 各腳本說明
+
+### `scripts/fetch_dividends.py`
+從 MoneyDJ 抓取所有 ETF 的配息紀錄，寫入 DuckDB `etf_dividends` 資料表。
+
+| 欄位 | 說明 |
+|------|------|
+| `ex_date` | 除息日 |
+| `amount_per_unit` | 每單位配息金額（原始幣別） |
+| `currency` | `TWD`（台灣 ETF）或 `USD`（美股 ETF） |
+
+- **URL**：`Basic0005.xdjhtm?etfid={ticker}` （台灣 ETF 加 `.TW`，美股不加）
+- **資料範圍**：MoneyDJ 僅顯示**近二年**配息紀錄
+- **跳過邏輯**：若 DB 中已有該 ticker 近 45 天的配息資料，則跳過重抓
+- **估算說明**：`dca_analysis.py` 在執行 DCA 股息再投資模擬時，對無實際資料的年份以「所有有資料年份的年均配息金額」補估，並在報表中標記說明
+
+```bash
+python scripts/fetch_dividends.py
+# 或
+make dividends
+```
+
+---
 
 ### `scripts/fetch_tracking_diff.py`
 從 MoneyDJ 抓取所有 ETF（台灣 + 美股）的季度追蹤差額，寫入 DuckDB `etf_tracking_diff` 資料表。
@@ -175,6 +206,37 @@ python scripts/analyze_portfolios.py --output reports/my_report.xlsx
 
 ---
 
+## DCA 分析報表格式（`scripts/dca_analysis.py` 產出）
+
+```bash
+make dca   # 互動輸入每月金額與投資日
+```
+
+### Sheet 1：DCA CAGR 各期間
+各投資組合 × 各時間區間的 IRR（金額加權年化）與簡單 CAGR，綠色=正報酬，紅色=負報酬。
+
+### Sheet 2：各期間詳細統計
+各組合 × 各區間的：投入月數、投入年數、總投入、最終淨值、總報酬率、IRR、簡單 CAGR。
+
+### Sheet 3：追蹤誤差分析
+投資組合加權追蹤誤差（來自 MoneyDJ 季度資料）。
+
+### Sheet 4：含股息再投資 CAGR
+與 Sheet 1 格式相同，但所有數字均含股息再投資。
+ETF 名稱後標示「*」表示該組合中有 ETF 的部分年份採均值估算。
+
+### Sheet 5：含股息再投資詳細
+與 Sheet 2 格式相同，另增「股息再投入累計」欄。
+下方附「各 ETF 配息資料說明」表格，列出每支 ETF 的：
+- 是否有 MoneyDJ 實際資料
+- 有資料年份數 / 估算年份數
+- 年均每單位配息金額（TWD，估算基礎值）
+- 典型配息月份
+
+> **估算說明**：MoneyDJ 僅提供近二年配息紀錄。無資料的年份以「所有有資料年份的年均配息金額」在典型配息月的 15 日模擬配息。此估算可能高估或低估實際配息，僅供參考。
+
+---
+
 ## 設定檔 `config.yaml`
 
 ### ETF 清單
@@ -214,6 +276,7 @@ portfolios:
 | `fetch_status` | 各 ETF 最後爬取日期與狀態 |
 | `fx_rates` | USD→TWD 每日匯率 |
 | `etf_tracking_diff` | 各 ETF 季度追蹤差額（由 pipeline Step 1 更新） |
+| `etf_dividends` | 各 ETF 配息紀錄，近二年實際資料（由 pipeline Step 2 更新） |
 
 ---
 
@@ -222,7 +285,7 @@ portfolios:
 | 時機 | 動作 |
 |------|------|
 | 每個交易日 | `python scripts/update_data.py --once` 或設 cron |
-| 每季結束後 | `make tracking-diff` 或 `make pipeline` 自動更新追蹤差額 |
+| 每季結束後 | `make tracking-diff` 或 `make pipeline` 自動更新追蹤差額與配息資料 |
 | 每年初（1~2月） | `python scripts/pipeline.py` 更新費用率並重新輸出報表 |
 | 新增 ETF 時 | 編輯 `config.yaml` → 執行 `python scripts/fetch_initial.py` |
 | US ETF 費率有異動 | 手動更新 `config.yaml` 的 `expense_ratio` 欄位 |

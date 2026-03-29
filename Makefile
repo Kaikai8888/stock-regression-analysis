@@ -5,7 +5,7 @@
 
 PYTHON := python3
 
-.PHONY: help run init update update-watch expense expense-update tracking-diff \
+.PHONY: help run init update update-watch expense expense-update tracking-diff dividends \
         pipeline pipeline-skip-fetch pipeline-skip-expense pipeline-force \
         report dca db-status db-prices
 
@@ -24,9 +24,10 @@ help:
 	@echo "  make expense             查詢台灣 ETF 最新費用率（不修改任何檔案）"
 	@echo "  make expense-update      從 MoneyDJ 抓取費用率並更新 config.yaml"
 	@echo "  make tracking-diff       抓取所有 ETF 季度追蹤差額（已有上季資料則跳過）"
+	@echo "  make dividends           抓取所有 ETF 配息紀錄（近 45 天有資料則跳過）"
 	@echo ""
 	@echo "【Pipeline 完整流程】"
-	@echo "  make pipeline            完整流程：追蹤差額 → 資料更新 → 費用率 → Excel 報表"
+	@echo "  make pipeline            完整流程：追蹤差額 → 配息 → 資料更新 → 費用率 → Excel 報表"
 	@echo "  make pipeline-skip-fetch 跳過資料抓取，只更新費用率 + 產報表"
 	@echo "                           （DB 已是最新時使用）"
 	@echo "  make pipeline-skip-expense 跳過費用率更新，只更新資料 + 產報表"
@@ -72,6 +73,10 @@ expense-update:
 # 從 MoneyDJ 抓取所有 ETF 季度追蹤差額（已有上季資料則跳過）
 tracking-diff:
 	$(PYTHON) scripts/fetch_tracking_diff.py
+
+# 從 MoneyDJ 抓取所有 ETF 配息紀錄（近 45 天有資料則跳過）
+dividends:
+	$(PYTHON) scripts/fetch_dividends.py
 
 # ── Pipeline ─────────────────────────────────────────────────
 

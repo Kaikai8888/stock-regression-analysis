@@ -56,6 +56,15 @@ DDL_STATEMENTS = [
         PRIMARY KEY (ticker, quarter)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS etf_dividends (
+        ticker          VARCHAR NOT NULL,
+        ex_date         DATE    NOT NULL,
+        amount_per_unit DOUBLE  NOT NULL,  -- 每單位配息金額（原始幣別）
+        currency        VARCHAR NOT NULL,  -- 'TWD' 或 'USD'
+        PRIMARY KEY (ticker, ex_date)
+    )
+    """,
 ]
 
 
