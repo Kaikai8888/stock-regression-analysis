@@ -1,5 +1,6 @@
 .claude/settings.local.json
 reports/*
+tmp/*
 
 # System
 .DS_Store
