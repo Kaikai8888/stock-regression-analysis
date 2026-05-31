@@ -45,6 +45,27 @@ etfs:
     # 0.15% | 官方確認 2025/12
     # 查詢：https://www.ishares.com/us/products/239456/ishares-710-year-treasury-bond-etf
 
+  - ticker: XLP
+    exchange: US
+    name: "SPDR Consumer Staples Select Sector ETF"
+    expense_ratio: 0.0009
+    # 0.09% | 官方確認 2025/12
+    # 查詢：https://www.ssga.com/us/en/intermediary/etfs/funds/the-consumer-staples-select-sector-spdr-fund-xlp
+
+  - ticker: XLV
+    exchange: US
+    name: "SPDR Health Care Select Sector ETF"
+    expense_ratio: 0.0009
+    # 0.09% | 官方確認 2025/12
+    # 查詢：https://www.ssga.com/us/en/intermediary/etfs/funds/the-health-care-select-sector-spdr-fund-xlv
+
+  - ticker: SHY
+    exchange: US
+    name: "iShares 1-3 Year Treasury Bond ETF"
+    expense_ratio: 0.0015
+    # 0.15% | 官方確認 2025/12
+    # 查詢：https://www.ishares.com/us/products/239452/ishares-13-year-treasury-bond-etf
+
   # ── 台灣 ETF ──────────────────────────────────────────────────────────────
   # 費率為「總管理費用率」（含經理費、保管費、手續費、交易稅及其他費用）
   # 來源：MoneyDJ「基本資料」頁面「總管理費用(%)」欄位
@@ -101,6 +122,13 @@ etfs:
     # 1.14% | MoneyDJ 總管理費用率（待確認，請手動更新）
     # 查詢：https://www.moneydj.com/ETF/X/Basic/Basic0004.xdjhtm?etfid=00752.TW
 
+  - ticker: "00713"
+    exchange: TWSE
+    name: "元大台灣高息低波"
+    expense_ratio: 0.0072
+    # 0.72% | MoneyDJ 總管理費用率（2026/05 資料）
+    # 查詢：https://www.moneydj.com/ETF/X/Basic/Basic0004.xdjhtm?etfid=00713.TW
+
 # ============================================================
 # 投資組合比較
 # allocations 的比例總和請確認 = 1.0
@@ -125,3 +153,20 @@ portfolios:
       "0050": 0.2
       "00646": 0.2
       "00679B": 0.2
+
+  - name: "科技加碼"
+    description: "以全球股市為核心，加碼科技主題 ETF，搭配短債"
+    allocations:
+      VT: 0.5
+      IXN: 0.2
+      "00662": 0.1
+      SHY: 0.2
+
+  - name: "防禦型"
+    description: "以必需消費、醫療保健、高息低波與短債降低波動"
+    allocations:
+      VT: 0.3
+      XLP: 0.15
+      XLV: 0.15
+      "00713": 0.2
+      SHY: 0.2
