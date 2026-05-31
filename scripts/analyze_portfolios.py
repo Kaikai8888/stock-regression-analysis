@@ -203,6 +203,7 @@ def analyzePortfolio(conn, portfolio: dict, etfInfoMap: dict, today: date) -> di
     """
     result = {
         "name": portfolio["name"],
+        "description": portfolio.get("description", ""),
         "allocations": portfolio["allocations"],
         "periods": {},
     }
@@ -351,11 +352,15 @@ def writeCagrSheet(ws, allResults: list):
     # 資料列
     row = 3
     for portfolioResult in allResults:
-        nameCell = ws.cell(row=row, column=1, value=portfolioResult["name"])
+        desc = portfolioResult.get("description", "")
+        nameValue = f"{portfolioResult['name']}\n{desc}" if desc else portfolioResult["name"]
+        nameCell = ws.cell(row=row, column=1, value=nameValue)
         nameFill = PatternFill("solid", fgColor=COLOR_PERIOD)
         nameCell.fill = nameFill
         nameCell.font = Font(bold=True)
-        nameCell.alignment = Alignment(horizontal="left", vertical="center")
+        nameCell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        if desc:
+            ws.row_dimensions[row].height = 30
 
         for col, pName in enumerate(periodNames, start=2):
             stats = portfolioResult["periods"].get(pName)
@@ -429,7 +434,13 @@ def writeStatsSheet(ws, allResults: list):
     pctFormat = "0.00%"
     for row, pr in enumerate(allResults, start=2):
         stats = pr["periods"].get("最長期間")
-        ws.cell(row=row, column=1, value=pr["name"]).font = Font(bold=True)
+        desc = pr.get("description", "")
+        nameValue = f"{pr['name']}\n{desc}" if desc else pr["name"]
+        nameCell = ws.cell(row=row, column=1, value=nameValue)
+        nameCell.font = Font(bold=True)
+        nameCell.alignment = Alignment(horizontal="left", wrap_text=True)
+        if desc:
+            ws.row_dimensions[row].height = 30
 
         if stats:
             ws.cell(row=row, column=2, value=str(stats.get("start", ""))).alignment = Alignment(horizontal="center")
