@@ -19,10 +19,13 @@ def buildPortfolioCumulativeReturns(
     baseCurrency 傳入非 "TWD" 的值（例如 "NATIVE"）時不做幣別轉換，
     回傳各 ETF 原始計價幣別的報酬序列，供「原幣報酬」對照使用。
     """
-    # 1. 取所有需要的 ticker
+    # 1. 取所有需要的 ticker（排除權重為 0 的 ticker，例如 config.yaml 用
+    #    "VT": 0 明確標示不投資某標的；若不排除，該 ticker 的價格起始日
+    #    仍會拉長「最長期間」查詢區間，導致回傳序列多出一段不該存在、
+    #    報酬率被 fillna(0) 硬填為 0% 的空白期）
     allTickers = set()
     for p in portfolioConfig:
-        allTickers.update(p["allocations"].keys())
+        allTickers.update(t for t, w in p["allocations"].items() if w)
 
     # 2. 載入價格（加入幣別欄位）
     tickerList = list(allTickers)
@@ -105,13 +108,26 @@ def computePortfolioReturns(
     """
     計算投資組合的累積報酬序列（起始值 = 100）。
     """
-    tickers = list(allocations.keys())
+    # 權重為 0 的 ticker 排除在外，避免其價格起始日拉長查詢區間
+    tickers = [t for t, w in allocations.items() if w]
     subset = pricesDf[pricesDf["ticker"].isin(tickers)].copy()
     if subset.empty:
         return None
 
     subset["date"] = pd.to_datetime(subset["date"])
     pivot = subset.pivot(index="date", columns="ticker", values="close").sort_index()
+
+    # 只從「所有 ticker 都已有資料」的最早共同日期開始計算。若從更早的
+    # 聯集日期起算，尚未上市的 ticker 會被下面的 fillna(0) 誤當成「當天
+    # 報酬 0%」，等於假裝那筆錢閒置不動，嚴重低估回測期間的實際報酬
+    # （例如 0050 2009 年才有資料，若混進 2001 年就有資料的 IXN 一起算，
+    # 2001-2009 這段會把 0050 的權重當成 0% 報酬，拖累整體報酬率）。
+    firstValidDates = [d for d in (pivot[t].first_valid_index() for t in pivot.columns) if d is not None]
+    if not firstValidDates:
+        return None
+    pivot = pivot[pivot.index >= max(firstValidDates)]
+    if pivot.empty:
+        return None
 
     # 建立聯集日期索引，各 ticker 各自 forward-fill
     pivot = pivot.reindex(
