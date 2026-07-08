@@ -107,7 +107,7 @@ def main():
         allResults = []
         for portfolio in config["portfolios"]:
             print(f"  計算：{portfolio['name']} ...", end=" ", flush=True)
-            result = analyzePortfolio(conn, portfolio, etfInfoMap, today)
+            result = analyzePortfolio(conn, portfolio, today)
             allResults.append(result)
             print("完成")
 
@@ -186,7 +186,7 @@ def getEtfEarliestDates(conn) -> dict:
 # 投資組合分析
 # ─────────────────────────────────────────────────────────────
 
-def analyzePortfolio(conn, portfolio: dict, etfInfoMap: dict, today: date) -> dict:
+def analyzePortfolio(conn, portfolio: dict, today: date) -> dict:
     """
     對單一投資組合計算各時間區間的統計指標。
     回傳結構：
@@ -216,22 +216,26 @@ def analyzePortfolio(conn, portfolio: dict, etfInfoMap: dict, today: date) -> di
         else:
             startDate = today - delta
 
-        stats = computePeriodStats(conn, portfolio, etfInfoMap, startDate, today)
+        stats = computePeriodStats(conn, portfolio, startDate, today)
         result["periods"][periodName] = stats
 
     return result
 
 
 def computePeriodStats(
-    conn, portfolio: dict, etfInfoMap: dict, startDate: date, endDate: date
+    conn, portfolio: dict, startDate: date, endDate: date, baseCurrency: str = "TWD"
 ) -> dict | None:
-    """計算單一時間區間的統計，回傳 None 表示該區間無足夠資料。"""
+    """
+    計算單一時間區間的統計，回傳 None 表示該區間無足夠資料。
+    baseCurrency="NATIVE" 時不做幣別轉換，回傳原幣報酬（僅適用於單一 ticker
+    組成的假投資組合，用於跟 TWD 換算後的報酬做對照）。
+    """
     cumReturnsDict = buildPortfolioCumulativeReturns(
         conn,
         [portfolio],
-        etfInfoMap,
         startDate,
         endDate,
+        baseCurrency=baseCurrency,
     )
 
     series = cumReturnsDict.get(portfolio["name"])
@@ -263,7 +267,10 @@ def computePeriodStats(
 def analyzeEtfs(conn, config: dict, etfInfoMap: dict, today: date) -> list:
     """
     對 config 中每隻 ETF 計算各時間區間的 CAGR。
-    回傳：[{ticker, name, exchange, currency, expense_ratio, inception, periods: {periodName: stats|None}}]
+    每個時間區間同時計算「換算 TWD」與「原幣」兩組統計，方便對照匯率效應
+    （例如美元升值可能讓 TWD 報酬高於原幣報酬，反之亦然）。
+    回傳：[{ticker, name, exchange, currency, expense_ratio, inception,
+            periods: {periodName: {"twd": stats|None, "native": stats|None}}}]
     """
     etfEarliestDates = getEtfEarliestDates(conn)
     results = []
@@ -272,6 +279,7 @@ def analyzeEtfs(conn, config: dict, etfInfoMap: dict, today: date) -> list:
         ticker = etf["ticker"]
         info = etfInfoMap.get(ticker, {})
         inception = etfEarliestDates.get(ticker)
+        isNativeTwd = info.get("currency") == "TWD"
 
         # 以單一 ETF 組成 100% 的假投資組合來複用現有計算邏輯
         syntheticPortfolio = {"name": ticker, "allocations": {ticker: 1.0}}
@@ -283,8 +291,12 @@ def analyzeEtfs(conn, config: dict, etfInfoMap: dict, today: date) -> list:
             else:
                 startDate = today - delta
 
-            stats = computePeriodStats(conn, syntheticPortfolio, etfInfoMap, startDate, today)
-            periods[periodName] = stats
+            twdStats = computePeriodStats(conn, syntheticPortfolio, startDate, today, baseCurrency="TWD")
+            # TWD 計價的 ETF 原幣即為 TWD，直接沿用同一份結果即可，不必重算
+            nativeStats = twdStats if isNativeTwd else computePeriodStats(
+                conn, syntheticPortfolio, startDate, today, baseCurrency="NATIVE"
+            )
+            periods[periodName] = {"twd": twdStats, "native": nativeStats}
 
         results.append({
             "ticker":        ticker,
@@ -332,7 +344,7 @@ def writeCagrSheet(ws, allResults: list):
     ws.merge_cells("A1:A2")
     ws["A1"] = "投資組合"
     ws.merge_cells(f"B1:{get_column_letter(1 + len(periodNames))}1")
-    ws["B1"] = f"各時間區間年化報酬率 CAGR（已扣管理費，換算 TWD，資料截至 {today}）"
+    ws["B1"] = f"各時間區間年化報酬率 CAGR（換算 TWD，市價已內含基金實際管理費，資料截至 {today}）"
 
     # 副標題（期間名稱）
     for i, pName in enumerate(periodNames, start=2):
@@ -527,33 +539,65 @@ def writeCompositionSheet(ws, allResults: list, config: dict):
 # ── Sheet 4：各 ETF 年化報酬率 ────────────────────────────────
 
 def writeEtfSheet(ws, etfResults: list):
+    """
+    每個時間區間拆成「換算 TWD」與「原幣」兩欄並排對照，方便看出匯率效應
+    （例如美元升值時 TWD 欄位可能高於原幣欄位，反之亦然）；TWD 計價的
+    ETF（台股）兩欄數字會完全相同，因為本來就不需要轉換。
+    """
     periodNames = [p[0] for p in ETF_PERIODS]
     today = date.today()
+    fixedHeaders = ["代號", "名稱", "交易所", "費用率", "建立時間"]
+    nFixed = len(fixedHeaders)
+    nCols = nFixed + len(periodNames) * 2
 
     # 第一列：大標題
-    lastCol = get_column_letter(5 + len(periodNames))
+    lastCol = get_column_letter(nCols)
     ws.merge_cells(f"A1:{lastCol}1")
-    ws["A1"] = f"各 ETF 年化報酬率 CAGR（已扣管理費，換算 TWD，資料截至 {today}）"
+    ws["A1"] = (
+        f"各 ETF 年化報酬率 CAGR（TWD＝換算台幣後報酬，原幣＝未轉換之當地計價貨幣報酬；"
+        f"市價已內含基金實際管理費，資料截至 {today}）"
+    )
     ws["A1"].fill = PatternFill("solid", fgColor=COLOR_HEADER)
     ws["A1"].font = Font(color="FFFFFF", bold=True, size=11)
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[1].height = 28
 
-    # 第二列：欄位標題
-    fixedHeaders = ["代號", "名稱", "交易所", "費用率", "建立時間"]
-    allHeaders = fixedHeaders + periodNames
+    # 第二、三列：欄位標題（固定欄位跨列合併；時間區間欄位跨兩欄合併後，
+    # 第三列再分別標示 TWD／原幣）
     subheadFill = PatternFill("solid", fgColor=COLOR_SUBHEAD)
     subheadFont = Font(color="FFFFFF", bold=True)
-    for col, h in enumerate(allHeaders, start=1):
+    headerAlign = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    for col, h in enumerate(fixedHeaders, start=1):
+        ws.merge_cells(start_row=2, start_column=col, end_row=3, end_column=col)
         cell = ws.cell(row=2, column=col, value=h)
         cell.fill = subheadFill
         cell.font = subheadFont
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    ws.row_dimensions[2].height = 22
+        cell.alignment = headerAlign
+
+    for i, pName in enumerate(periodNames):
+        colTwd = nFixed + 1 + i * 2
+        colNative = colTwd + 1
+        ws.merge_cells(start_row=2, start_column=colTwd, end_row=2, end_column=colNative)
+        periodCell = ws.cell(row=2, column=colTwd, value=pName)
+        periodCell.fill = subheadFill
+        periodCell.font = subheadFont
+        periodCell.alignment = headerAlign
+
+        for col, label in [(colTwd, "TWD"), (colNative, "原幣")]:
+            cell = ws.cell(row=3, column=col, value=label)
+            cell.fill = subheadFill
+            cell.font = Font(color="FFFFFF", size=9)
+            cell.alignment = headerAlign
+
+    ws.row_dimensions[2].height = 20
+    ws.row_dimensions[3].height = 16
 
     # 資料列
     pctFormat = "0.00%"
-    for row, etf in enumerate(etfResults, start=3):
+    startRow = 4
+    for rowOffset, etf in enumerate(etfResults):
+        row = startRow + rowOffset
         ws.cell(row=row, column=1, value=etf["ticker"]).font = Font(bold=True)
         ws.cell(row=row, column=2, value=etf["name"])
         ws.cell(row=row, column=3, value=etf["exchange"]).alignment = Alignment(horizontal="center")
@@ -567,36 +611,35 @@ def writeEtfSheet(ws, etfResults: list):
         incCell = ws.cell(row=row, column=5, value=str(inception) if inception else "—")
         incCell.alignment = Alignment(horizontal="center")
 
-        # 各時間區間 CAGR
-        for colOffset, pName in enumerate(periodNames):
-            col = 6 + colOffset
-            stats = etf["periods"].get(pName)
-            cell = ws.cell(row=row, column=col)
+        # 各時間區間 CAGR（TWD／原幣並排）
+        for i, pName in enumerate(periodNames):
+            colTwd = nFixed + 1 + i * 2
+            colNative = colTwd + 1
+            periodStats = etf["periods"].get(pName) or {}
 
-            if stats is None:
-                cell.value = "資料不足"
-                cell.alignment = Alignment(horizontal="center")
-                cell.font = Font(color="888888", italic=True, size=9)
-            else:
-                cagr = stats.get("cagr")
-                if cagr is not None:
-                    cagrDecimal = cagr / 100
-                    cell.value = cagrDecimal
-                    cell.number_format = pctFormat
-                    cell.alignment = Alignment(horizontal="right")
-                    cell.fill = PatternFill("solid", fgColor=COLOR_POS if cagrDecimal >= 0 else COLOR_NEG)
+            for col, stats in [(colTwd, periodStats.get("twd")), (colNative, periodStats.get("native"))]:
+                cell = ws.cell(row=row, column=col)
+                cagr = stats.get("cagr") if stats else None
 
-                    # 最長期間加備注顯示起訖年份
-                    if pName == "最長期間" and stats.get("start"):
-                        from openpyxl.comments import Comment
-                        cell.comment = Comment(
-                            f"期間：{stats['start']} → {stats['end']}（{stats['years']}年）",
-                            "auto"
-                        )
-                else:
+                if cagr is None:
                     cell.value = "資料不足"
                     cell.alignment = Alignment(horizontal="center")
                     cell.font = Font(color="888888", italic=True, size=9)
+                    continue
+
+                cagrDecimal = cagr / 100
+                cell.value = cagrDecimal
+                cell.number_format = pctFormat
+                cell.alignment = Alignment(horizontal="right")
+                cell.fill = PatternFill("solid", fgColor=COLOR_POS if cagrDecimal >= 0 else COLOR_NEG)
+
+                # 最長期間加備注顯示起訖年份
+                if pName == "最長期間" and stats.get("start"):
+                    from openpyxl.comments import Comment
+                    cell.comment = Comment(
+                        f"期間：{stats['start']} → {stats['end']}（{stats['years']}年）",
+                        "auto"
+                    )
 
         ws.row_dimensions[row].height = 18
 
@@ -604,10 +647,10 @@ def writeEtfSheet(ws, etfResults: list):
     fixedWidths = [10, 32, 10, 10, 12]
     for i, w in enumerate(fixedWidths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
-    for i in range(6, 6 + len(periodNames)):
-        ws.column_dimensions[get_column_letter(i)].width = 11
+    for i in range(nFixed + 1, nFixed + 1 + len(periodNames) * 2):
+        ws.column_dimensions[get_column_letter(i)].width = 10
 
-    ws.freeze_panes = "F3"
+    ws.freeze_panes = ws.cell(row=startRow, column=nFixed + 1).coordinate
 
 
 if __name__ == "__main__":

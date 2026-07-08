@@ -9,7 +9,6 @@ from datetime import date
 def buildPortfolioCumulativeReturns(
     conn,
     portfolioConfig: list,
-    etfInfoMap: dict,
     startDate,
     endDate,
     baseCurrency: str = "TWD",
@@ -17,7 +16,8 @@ def buildPortfolioCumulativeReturns(
     """
     回傳：{portfolioName: [{date, value}]}（起始值 = 100）
 
-    etfInfoMap: {ticker: {currency, expense_ratio}}
+    baseCurrency 傳入非 "TWD" 的值（例如 "NATIVE"）時不做幣別轉換，
+    回傳各 ETF 原始計價幣別的報酬序列，供「原幣報酬」對照使用。
     """
     # 1. 取所有需要的 ticker
     allTickers = set()
@@ -58,7 +58,7 @@ def buildPortfolioCumulativeReturns(
     for portfolio in portfolioConfig:
         name = portfolio["name"]
         allocations = portfolio["allocations"]
-        cumReturns = computePortfolioReturns(pricesTwd, allocations, etfInfoMap)
+        cumReturns = computePortfolioReturns(pricesTwd, allocations)
         if cumReturns is not None:
             df = cumReturns.reset_index()
             df.columns = ["date", "value"]
@@ -71,6 +71,8 @@ def convertToCurrency(pricesDf: pd.DataFrame, fxDf: pd.DataFrame, targetCurrency
     """
     將 USD 計價的 ETF 轉換為目標幣別（TWD）。
     TWD ETF 不做轉換。
+    targetCurrency 傳入非 "TWD" 的值（例如 "NATIVE"）時視為不轉換，
+    直接回傳各 ETF 原始計價幣別的價格，供「原幣報酬」對照使用。
     """
     if targetCurrency == "TWD":
         usdMask = pricesDf["currency"] == "USD"
@@ -99,7 +101,6 @@ def convertToCurrency(pricesDf: pd.DataFrame, fxDf: pd.DataFrame, targetCurrency
 def computePortfolioReturns(
     pricesDf: pd.DataFrame,
     allocations: dict,
-    etfInfoMap: dict,
 ) -> pd.Series | None:
     """
     計算投資組合的累積報酬序列（起始值 = 100）。
@@ -121,14 +122,10 @@ def computePortfolioReturns(
     pivot = pivot.dropna(how="all")
 
     # 計算日報酬，缺值填 0（該日不交易）
+    # 注意：close 為 yfinance auto_adjust=True 的還原價格，本身已反映
+    # 基金每日內扣的實際管理費（費用已內含於市價/淨值中），故不再另行扣除
+    # expense_ratio，避免重複扣費。
     dailyReturns = pivot.pct_change().fillna(0)
-
-    # 扣管理費（年化費率 / 252）
-    for ticker in tickers:
-        if ticker in dailyReturns.columns:
-            info = etfInfoMap.get(ticker, {})
-            expenseRatio = info.get("expense_ratio") or 0.0
-            dailyReturns[ticker] = dailyReturns[ticker] - expenseRatio / 252
 
     # 加權混合（只用有資料的 ticker）
     validTickers = [t for t in tickers if t in dailyReturns.columns]
