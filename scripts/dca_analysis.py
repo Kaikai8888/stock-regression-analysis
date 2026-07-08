@@ -200,6 +200,30 @@ def getEarliestDate(conn) -> date | None:
     return None
 
 
+def getPortfolioCommonStartDate(pricesTwd: pd.DataFrame, allocations: dict) -> date | None:
+    """
+    回傳投資組合「所有（權重 > 0 的）成分標的皆已有價格資料」的最早共同
+    日期，而非資料庫裡任一標的最早出現的日期。
+
+    若用全域最早日期當作「最長期間」起點，尚未上市的標的在 DCA 模擬
+    時，該月份分配到的資金會被 runDcaSimulation 靜默略過（price 為
+    NaN），但 total_invested 仍照全額計算，等於帳面上算有投入、實際卻
+    沒買到任何東西，變相低估報酀率。與 app/services/portfolio.py 的
+    最長期間修正邏輯一致。
+    """
+    tickers = [t for t, w in allocations.items() if w]
+    if not tickers:
+        return None
+    firstDates = []
+    for t in tickers:
+        tickerDates = pricesTwd.loc[pricesTwd["ticker"] == t, "date"]
+        if tickerDates.empty:
+            return None
+        firstDates.append(tickerDates.min())
+    commonStart = max(firstDates)
+    return commonStart.date() if hasattr(commonStart, "date") else commonStart
+
+
 def loadPricesTwd(conn, tickers: list, startDate: date, endDate: date) -> pd.DataFrame:
     """載入所有 ETF 價格並換算為 TWD。"""
     placeholders = ",".join(["?" for _ in tickers])
@@ -872,8 +896,11 @@ def analyzePortfolioWithDividends(
         "periods":  {},
     }
 
+    commonStart = getPortfolioCommonStartDate(pricesTwd, portfolio["allocations"]) or earliestDate
+
     for periodName, delta in PERIODS:
-        startDate = earliestDate if delta is None else today - delta
+        periodStart = commonStart if delta is None else today - delta
+        startDate = max(periodStart, commonStart)
         _txns, summary = runDcaWithDividends(
             portfolio, pricesTwd, divCalendars,
             monthlyAmount, nthDay, startDate, today,
@@ -911,8 +938,11 @@ def analyzePortfolio(
         "tracking":    computePortfolioTrackingError(portfolio, etfInfoMap, trackingDf, earliestDate, today),
     }
 
+    commonStart = getPortfolioCommonStartDate(pricesTwd, portfolio["allocations"]) or earliestDate
+
     for periodName, delta in PERIODS:
-        startDate = earliestDate if delta is None else today - delta
+        periodStart = commonStart if delta is None else today - delta
+        startDate = max(periodStart, commonStart)
         _txns, summary = runDcaSimulation(
             portfolio, pricesTwd, monthlyAmount, nthDay, startDate, today,
             etfInfoMap=etfInfoMap, feeConfig=feeConfig, fxSeries=fxSeries,
