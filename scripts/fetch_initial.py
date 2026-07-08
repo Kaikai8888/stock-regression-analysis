@@ -117,6 +117,39 @@ def fetchUsEtfInfo(ticker: str, configEntry: dict) -> dict:
 # 匯率 USD→TWD（yfinance）
 # ──────────────────────────────────────────────
 
+def cleanFxOutliers(df: pd.DataFrame, threshold: float = 0.15) -> pd.DataFrame:
+    """
+    修正 yfinance TWD=X 歷史資料中偶爾出現的單日離群壞值（例如曾發現
+    2011-10-25、2014-12-31 兩天匯率被錯誤記錄為 1.8、3.67，正常應在 30
+    上下；重新抓取仍會拿到同樣的壞值，代表壞資料就在 Yahoo 來源本身）。
+
+    判斷邏輯：某天與前一天的變動、及與後一天的變動都超過 threshold，
+    但前一天與後一天彼此相近（代表隔天幾乎完全「彈回」），視為單日離群點，
+    以前後兩個有效值線性插值取代，避免污染下游報酬率／波動度計算。
+    """
+    df = df.sort_values("date").reset_index(drop=True)
+    rates = df["rate"].to_numpy()
+    isOutlier = [False] * len(rates)
+
+    for i in range(1, len(rates) - 1):
+        prevRate, curRate, nextRate = rates[i - 1], rates[i], rates[i + 1]
+        if not (prevRate and curRate and nextRate):
+            continue
+        dropRatio = abs(curRate / prevRate - 1)
+        recoverRatio = abs(nextRate / curRate - 1)
+        roundTripRatio = abs(nextRate / prevRate - 1)
+        if dropRatio > threshold and recoverRatio > threshold and roundTripRatio < threshold / 3:
+            isOutlier[i] = True
+
+    if any(isOutlier):
+        bad = df.loc[isOutlier, "date"].tolist()
+        print(f"    偵測到 {len(bad)} 筆離群匯率資料，已用鄰近日期插值修正：{bad}")
+        df.loc[isOutlier, "rate"] = None
+        df["rate"] = df["rate"].interpolate(method="linear")
+
+    return df
+
+
 def fetchFxHistory(conn):
     print("\n── 匯率 USD/TWD ──────────────────────")
     print("  TWD=X ...", end=" ", flush=True)
@@ -133,6 +166,7 @@ def fetchFxHistory(conn):
         # 直接儲存，不做反轉（舊注解有誤）
         hist["rate"] = hist["close"]
         rows = hist[["date", "rate"]].dropna()
+        rows = cleanFxOutliers(rows)
         conn.executemany(
             "INSERT OR REPLACE INTO fx_rates (date, from_ccy, to_ccy, rate) VALUES (?, 'USD', 'TWD', ?)",
             rows.values.tolist()
@@ -170,6 +204,7 @@ def fetchTwoEtfs(conn, etfList: list):
                 print("無資料，跳過")
                 updateFetchStatus(conn, ticker, None, "error", "yfinance TWO 回傳空資料")
                 continue
+            df = fixUnadjustedSplits(df)
             upsertPrices(conn, df, ticker, "TWD")
             info = buildTwseInfo(ticker, etf)
             info["exchange"] = "TWO"
@@ -208,6 +243,45 @@ def fetchTwseEtfs(conn, etfList: list):
             updateFetchStatus(conn, ticker, None, "error", str(e))
 
 
+def fixUnadjustedSplits(df: pd.DataFrame, threshold: float = 0.30) -> pd.DataFrame:
+    """
+    修正 yfinance 對台股 ETF 漏記的分割／減資事件。
+
+    曾發現 0050.TW 在 2014-01-02 的 close 從前一日 37.41 直接掉到 9.33
+    （比例約 1/4），但 yfinance 的 Stock Splits 動作序列該日卻是 0，導致
+    auto_adjust=True 完全沒有回溯調整——連重新整批抓取歷史資料也一樣，
+    因為調整演算法本身就沒有這筆分割事件可用。
+
+    判斷邏輯：單日價格變動超過 threshold，且隔天沒有立刻彈回原水準
+    （藉此跟「單日壞資料、隔天就恢復」的離群點區分開來），視為真實發生但
+    未被來源記錄的分割事件，將該日之前的所有價格依比例縮放，使整條序列
+    基準一致。
+    """
+    df = df.sort_values("date").reset_index(drop=True)
+    closes = df["close"].to_numpy()
+
+    for i in range(1, len(closes)):
+        prevClose, curClose = closes[i - 1], closes[i]
+        if not prevClose or not curClose:
+            continue
+        ratio = curClose / prevClose
+        if abs(ratio - 1) <= threshold:
+            continue
+        if i + 1 < len(closes) and closes[i + 1]:
+            recoverRatio = closes[i + 1] / prevClose
+            if abs(recoverRatio - 1) < threshold / 2:
+                continue  # 隔天幾乎彈回原水準，屬單日離群壞值而非分割
+
+        print(f"    偵測到疑似未回溯調整的分割事件於 {df['date'].iloc[i]}"
+              f"（比例 {ratio:.4f}），已將該日之前價格等比例縮放")
+        for col in ["open", "high", "low", "close"]:
+            if col in df.columns:
+                df.loc[: i - 1, col] = df.loc[: i - 1, col] * ratio
+        closes = df["close"].to_numpy()
+
+    return df
+
+
 def fetchTwseEtfHistory(ticker: str) -> pd.DataFrame:
     """
     主要策略：yfinance TICKER.TW（auto_adjust=True，已還原股票分割）
@@ -223,7 +297,7 @@ def fetchTwseEtfHistory(ticker: str) -> pd.DataFrame:
             cols = [c for c in ["date", "open", "high", "low", "close", "volume"] if c in hist.columns]
             df = hist[cols].dropna(subset=["close"])
             if not df.empty:
-                return df
+                return fixUnadjustedSplits(df)
     except Exception:
         pass
 

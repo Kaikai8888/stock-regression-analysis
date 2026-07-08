@@ -28,6 +28,7 @@ from scripts.fetch_initial import (
     upsertPrices,
     upsertInfo,
     updateFetchStatus,
+    cleanFxOutliers,
     TWSE_REQUEST_INTERVAL,
 )
 
@@ -278,6 +279,7 @@ def updateFx(conn, config: dict):
         # Yahoo Finance TWD=X 的 close 值即為 TWD per USD（例如 31.43），直接儲存
         hist["rate"] = hist["close"]
         rows = hist[["date", "rate"]].dropna()
+        rows = cleanFxOutliers(rows)
 
         if lastDate:
             rows = rows[rows["date"] > lastDate]

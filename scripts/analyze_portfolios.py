@@ -538,17 +538,25 @@ def writeCompositionSheet(ws, allResults: list, config: dict):
 
 # ── Sheet 4：各 ETF 年化報酬率 ────────────────────────────────
 
+STAT_METRIC_HEADERS = ["年化波動度", "Sharpe", "最大回撤", "最大回撤期間"]
+
+
 def writeEtfSheet(ws, etfResults: list):
     """
     每個時間區間拆成「換算 TWD」與「原幣」兩欄並排對照，方便看出匯率效應
     （例如美元升值時 TWD 欄位可能高於原幣欄位，反之亦然）；TWD 計價的
     ETF（台股）兩欄數字會完全相同，因為本來就不需要轉換。
+    表格最後另外附上「統計指標（最長期間）」：年化波動度、Sharpe、
+    最大回撤及其發生期間，同樣以 TWD／原幣對照。
     """
     periodNames = [p[0] for p in ETF_PERIODS]
     today = date.today()
     fixedHeaders = ["代號", "名稱", "交易所", "費用率", "建立時間"]
     nFixed = len(fixedHeaders)
-    nCols = nFixed + len(periodNames) * 2
+    nPeriodCols = len(periodNames) * 2
+    nStatCols = len(STAT_METRIC_HEADERS) * 2
+    nCols = nFixed + nPeriodCols + nStatCols
+    statsStartCol = nFixed + nPeriodCols + 1
 
     # 第一列：大標題
     lastCol = get_column_letter(nCols)
@@ -562,11 +570,24 @@ def writeEtfSheet(ws, etfResults: list):
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[1].height = 28
 
-    # 第二、三列：欄位標題（固定欄位跨列合併；時間區間欄位跨兩欄合併後，
-    # 第三列再分別標示 TWD／原幣）
+    # 第二、三列：欄位標題（固定欄位跨列合併；時間區間／統計指標欄位跨兩欄
+    # 合併後，第三列再分別標示 TWD／原幣）
     subheadFill = PatternFill("solid", fgColor=COLOR_SUBHEAD)
     subheadFont = Font(color="FFFFFF", bold=True)
     headerAlign = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    def writePairedHeader(colTwd: int, label: str):
+        colNative = colTwd + 1
+        ws.merge_cells(start_row=2, start_column=colTwd, end_row=2, end_column=colNative)
+        cell = ws.cell(row=2, column=colTwd, value=label)
+        cell.fill = subheadFill
+        cell.font = subheadFont
+        cell.alignment = headerAlign
+        for col, subLabel in [(colTwd, "TWD"), (colNative, "原幣")]:
+            subCell = ws.cell(row=3, column=col, value=subLabel)
+            subCell.fill = subheadFill
+            subCell.font = Font(color="FFFFFF", size=9)
+            subCell.alignment = headerAlign
 
     for col, h in enumerate(fixedHeaders, start=1):
         ws.merge_cells(start_row=2, start_column=col, end_row=3, end_column=col)
@@ -576,19 +597,10 @@ def writeEtfSheet(ws, etfResults: list):
         cell.alignment = headerAlign
 
     for i, pName in enumerate(periodNames):
-        colTwd = nFixed + 1 + i * 2
-        colNative = colTwd + 1
-        ws.merge_cells(start_row=2, start_column=colTwd, end_row=2, end_column=colNative)
-        periodCell = ws.cell(row=2, column=colTwd, value=pName)
-        periodCell.fill = subheadFill
-        periodCell.font = subheadFont
-        periodCell.alignment = headerAlign
+        writePairedHeader(nFixed + 1 + i * 2, pName)
 
-        for col, label in [(colTwd, "TWD"), (colNative, "原幣")]:
-            cell = ws.cell(row=3, column=col, value=label)
-            cell.fill = subheadFill
-            cell.font = Font(color="FFFFFF", size=9)
-            cell.alignment = headerAlign
+    for i, metricName in enumerate(STAT_METRIC_HEADERS):
+        writePairedHeader(statsStartCol + i * 2, metricName)
 
     ws.row_dimensions[2].height = 20
     ws.row_dimensions[3].height = 16
@@ -641,14 +653,53 @@ def writeEtfSheet(ws, etfResults: list):
                         "auto"
                     )
 
+        # 統計指標（最長期間）：年化波動度／Sharpe／最大回撤／最大回撤期間
+        # 表頭是「每個指標各自的 TWD／原幣兩欄相鄰」，故 TWD 系列位在偶數
+        # 位移（0,2,4,6）、原幣系列位在奇數位移（1,3,5,7），需與 statsStartCol
+        # 對齊，切勿與下方時間區間欄位（TWD/原幣相鄰）的位移方式搞混。
+        longestStats = etf["periods"].get("最長期間") or {}
+        for statCol, stats in [
+            (statsStartCol, longestStats.get("twd")),
+            (statsStartCol + 1, longestStats.get("native")),
+        ]:
+            if not stats or stats.get("volatility") is None:
+                for c in range(statCol, statCol + 8, 2):
+                    cell = ws.cell(row=row, column=c)
+                    cell.value = "資料不足"
+                    cell.alignment = Alignment(horizontal="center")
+                    cell.font = Font(color="888888", italic=True, size=9)
+                continue
+
+            volCell = ws.cell(row=row, column=statCol, value=stats["volatility"] / 100)
+            volCell.number_format = pctFormat
+            volCell.alignment = Alignment(horizontal="right")
+
+            sharpeCell = ws.cell(row=row, column=statCol + 2, value=stats["sharpe"])
+            sharpeCell.number_format = "0.000"
+            sharpeCell.alignment = Alignment(horizontal="right")
+
+            mddCell = ws.cell(row=row, column=statCol + 4, value=stats["max_drawdown"] / 100)
+            mddCell.number_format = pctFormat
+            mddCell.alignment = Alignment(horizontal="right")
+            mddCell.fill = PatternFill("solid", fgColor=COLOR_NEG if stats["max_drawdown"] < 0 else COLOR_NEUTRAL)
+
+            periodStr = f"{stats['max_drawdown_start']} ~ {stats['max_drawdown_end']}"
+            periodCell = ws.cell(row=row, column=statCol + 6, value=periodStr)
+            periodCell.alignment = Alignment(horizontal="center")
+            periodCell.font = Font(size=9)
+
         ws.row_dimensions[row].height = 18
 
     # 欄寬
     fixedWidths = [10, 32, 10, 10, 12]
     for i, w in enumerate(fixedWidths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
-    for i in range(nFixed + 1, nFixed + 1 + len(periodNames) * 2):
+    for i in range(nFixed + 1, statsStartCol):
         ws.column_dimensions[get_column_letter(i)].width = 10
+    for i in range(statsStartCol, statsStartCol + 6):
+        ws.column_dimensions[get_column_letter(i)].width = 11
+    for i in range(statsStartCol + 6, statsStartCol + 8):
+        ws.column_dimensions[get_column_letter(i)].width = 22
 
     ws.freeze_panes = ws.cell(row=startRow, column=nFixed + 1).coordinate
 

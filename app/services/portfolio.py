@@ -147,7 +147,9 @@ def computePortfolioReturns(
 def computePortfolioStats(cumReturnsSeries: list) -> dict:
     """
     輸入：[{date, value}] 序列（value 起始 = 100）
-    回傳：{total_return, cagr, volatility, sharpe, max_drawdown}
+    回傳：{total_return, cagr, volatility, sharpe, max_drawdown,
+           max_drawdown_start, max_drawdown_end}
+    max_drawdown_start/end 為最大回撤發生的期間（前波高點日期 → 最低點日期）。
     """
     if not cumReturnsSeries:
         return {}
@@ -164,10 +166,13 @@ def computePortfolioStats(cumReturnsSeries: list) -> dict:
     volatility = dailyReturns.std() * np.sqrt(252)
     sharpe = (cagr / volatility) if volatility > 0 else 0
 
-    # Max drawdown
+    # Max drawdown，並回推發生的期間：先找最低點（谷底），
+    # 再從谷底往前找波段最高點（峰頂）
     rolling_max = values.cummax()
     drawdown = (values - rolling_max) / rolling_max
-    maxDrawdown = drawdown.min()
+    troughIdx = int(drawdown.idxmin())
+    maxDrawdown = drawdown.iloc[troughIdx]
+    peakIdx = int(values.iloc[:troughIdx + 1].idxmax())
 
     return {
         "total_return": round(totalReturn * 100, 2),
@@ -175,4 +180,6 @@ def computePortfolioStats(cumReturnsSeries: list) -> dict:
         "volatility": round(volatility * 100, 2),
         "sharpe": round(sharpe, 3),
         "max_drawdown": round(maxDrawdown * 100, 2),
+        "max_drawdown_start": cumReturnsSeries[peakIdx]["date"],
+        "max_drawdown_end": cumReturnsSeries[troughIdx]["date"],
     }
