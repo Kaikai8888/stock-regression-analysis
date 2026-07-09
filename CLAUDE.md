@@ -61,7 +61,10 @@ yfinance / TWSE API / MoneyDJ
 - `us.fee_usd` / `us.min_investment_usd` — flat fee and minimum per purchase for US ETFs (USD, converted to TWD via FX rate)
 
 **`app/db.py`** — DuckDB schema and connection management. The 6 tables:
-- `etf_prices`: ticker, date, OHLCV, currency
+- `etf_prices`: ticker, date, OHLCV, adj_close, currency. Two price series with distinct semantics:
+  - `close` — market close, split-adjusted but **not** dividend-adjusted (yfinance `auto_adjust=False` Close). Used by DCA simulation (dividends are added separately from `etf_dividends`) and the raw price chart.
+  - `adj_close` — split **and** dividend-adjusted total-return price (yfinance Adj Close). Used by the main portfolio report, normalized comparison, and regression (all labeled 含息). NULL only for legacy/fallback rows; consumers use `COALESCE(adj_close, close)`.
+  - Because `adj_close` is back-adjusted (every new ex-dividend restates all history), price updates always re-fetch the full history and delete-then-insert per ticker — never append incrementally.
 - `etf_info`: ticker, name, exchange, expense_ratio, inception_date
 - `fetch_status`: per-ticker fetch state and error tracking
 - `fx_rates`: USD→TWD daily historical rates
@@ -70,14 +73,14 @@ yfinance / TWSE API / MoneyDJ
 
 **`app/services/regression.py`** — Beta, alpha (annualized), R², P-value vs benchmark; 60-day rolling beta.
 
-**`app/services/portfolio.py`** — Portfolio cumulative returns (starting value=100), USD→TWD FX conversion, per-day expense deduction (`expense_ratio/252`), and stats (CAGR, volatility, Sharpe, max drawdown).
+**`app/services/portfolio.py`** — Portfolio cumulative returns (starting value=100, dividend-adjusted total return via `adj_close`), USD→TWD FX conversion, per-day expense deduction (`expense_ratio/252`), and stats (CAGR, volatility, Sharpe, max drawdown).
 
 **`app/routes/`** — Three Flask blueprints:
 - `charts.py` (`/api/prices/*`): raw prices, normalized (base=100), regression stats
 - `portfolio.py` (`/api/portfolio/*`): cumulative returns and summary stats for all portfolios
 - `info.py` (`/api/info/*`): ETF metadata and fetch status
 
-**`scripts/dca_analysis.py`** — Dollar-cost averaging (DCA) simulation. Prompts for monthly amount and N-th trading day, splits by portfolio weights, buys at actual TWD prices, computes IRR (Newton-Raphson XIRR) and simple CAGR per period. Also reports quarterly tracking-error impact and dividend-reinvested returns. Outputs `reports/dca_analysis_YYYY-MM-DD.xlsx` with 5 sheets:
+**`scripts/dca_analysis.py`** — Dollar-cost averaging (DCA) simulation. Prompts for monthly amount and N-th trading day, splits by portfolio weights, buys at actual market TWD prices (`close`, not dividend-adjusted — dividend sheets add payouts explicitly to avoid double counting), computes IRR (Newton-Raphson XIRR) and simple CAGR per period. Also reports quarterly tracking-error impact and dividend-reinvested returns. Outputs `reports/dca_analysis_YYYY-MM-DD.xlsx` with 5 sheets:
 1. **DCA CAGR 各期間** — IRR & simple CAGR without dividends
 2. **各期間詳細統計** — Full stats without dividends, including total fees paid
 3. **追蹤誤差分析** — Tracking error per ETF and portfolio

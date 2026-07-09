@@ -352,7 +352,7 @@ def writeCagrSheet(ws, allResults: list):
     ws.merge_cells("A1:A2")
     ws["A1"] = "投資組合"
     ws.merge_cells(f"B1:{get_column_letter(1 + len(periodNames))}1")
-    ws["B1"] = f"各時間區間年化報酬率 CAGR（換算 TWD，市價已內含基金實際管理費，資料截至 {today}）"
+    ws["B1"] = f"各時間區間年化報酬率 CAGR（換算 TWD，含息還原價＝股息再投資之總報酬，已內含基金實際管理費，資料截至 {today}）"
 
     # 副標題（期間名稱）
     for i, pName in enumerate(periodNames, start=2):
@@ -582,8 +582,8 @@ def writeEtfSheet(ws, etfResults: list):
     lastCol = get_column_letter(nCols)
     ws.merge_cells(f"A1:{lastCol}1")
     ws["A1"] = (
-        f"各 ETF 年化報酬率 CAGR（TWD＝換算台幣後報酬，原幣＝未轉換之當地計價貨幣報酬；"
-        f"市價已內含基金實際管理費，資料截至 {today}）"
+        f"各 ETF 年化報酬率 CAGR（含息還原價＝股息再投資之總報酬；TWD＝換算台幣後報酬，"
+        f"原幣＝未轉換之當地計價貨幣報酬；已內含基金實際管理費，資料截至 {today}）"
     )
     ws["A1"].fill = PatternFill("solid", fgColor=COLOR_HEADER)
     ws["A1"].font = Font(color="FFFFFF", bold=True, size=11)
@@ -688,7 +688,7 @@ def writeEtfRiskSheet(ws, etfResults: list):
     lastCol = get_column_letter(nCols)
     ws.merge_cells(f"A1:{lastCol}1")
     ws["A1"] = (
-        f"各 ETF 風險指標（TWD＝換算台幣後報酬，原幣＝未轉換之當地計價貨幣報酬；"
+        f"各 ETF 風險指標（含息還原價計算；TWD＝換算台幣後報酬，原幣＝未轉換之當地計價貨幣報酬；"
         f"資料截至 {today}）"
     )
     ws["A1"].fill = PatternFill("solid", fgColor=COLOR_HEADER)

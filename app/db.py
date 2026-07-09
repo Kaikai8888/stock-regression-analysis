@@ -6,16 +6,20 @@ DB_PATH = Path(__file__).parent.parent / "data" / "etf.duckdb"
 DDL_STATEMENTS = [
     """
     CREATE TABLE IF NOT EXISTS etf_prices (
-        ticker   VARCHAR NOT NULL,
-        date     DATE    NOT NULL,
-        open     DOUBLE,
-        high     DOUBLE,
-        low      DOUBLE,
-        close    DOUBLE NOT NULL,
-        volume   BIGINT,
-        currency VARCHAR NOT NULL,
+        ticker    VARCHAR NOT NULL,
+        date      DATE    NOT NULL,
+        open      DOUBLE,
+        high      DOUBLE,
+        low       DOUBLE,
+        close     DOUBLE NOT NULL,  -- 市價收盤（已還原分割、未還原配息），DCA 模擬用
+        adj_close DOUBLE,           -- 含息還原價（分割＋配息皆還原），總報酬計算用
+        volume    BIGINT,
+        currency  VARCHAR NOT NULL,
         PRIMARY KEY (ticker, date)
     )
+    """,
+    """
+    ALTER TABLE etf_prices ADD COLUMN IF NOT EXISTS adj_close DOUBLE
     """,
     """
     CREATE TABLE IF NOT EXISTS etf_info (

@@ -23,13 +23,13 @@ from scripts.fetch_initial import (
     loadConfig,
     fetchUsEtfHistory,
     fetchUsEtfInfo,
-    fetchTwseViaApi,
+    fetchTwoEtfHistory,
+    fetchTwseEtfHistory,
     buildTwseInfo,
     upsertPrices,
     upsertInfo,
     updateFetchStatus,
     cleanFxOutliers,
-    TWSE_REQUEST_INTERVAL,
 )
 
 import yfinance as yf
@@ -94,7 +94,7 @@ def runUpdate(conn, config: dict):
             upsertPrices(conn, df, ticker, currency)
             lastDate = df["date"].max()
             updateFetchStatus(conn, ticker, lastDate, "ok")
-            print(f"OK（新增 {len(df)} 筆，最新 {lastDate}）")
+            print(f"OK（全量覆寫 {len(df)} 筆，最新 {lastDate}）")
         except Exception as e:
             print(f"錯誤：{e}")
             updateFetchStatus(conn, ticker, since, "error", str(e))
@@ -176,75 +176,23 @@ def getTickersNeedingUpdate(conn, config: dict) -> list[dict]:
 # 增量爬取
 # ──────────────────────────────────────────────
 
-def fetchUsEtfIncremental(ticker: str, since) -> pd.DataFrame:
-    if since is None:
-        # 若從未抓過，抓全部
-        return fetchUsEtfHistory(ticker)
+# adj_close（含息還原價）是「回溯調整」：每逢新的除息事件，整段歷史的
+# adj_close 都會改寫。若只增量追加新日期，舊資料列的 adj_close 會停留在
+# 舊的還原基準，整條序列基準不一致。因此更新一律全量重抓並整批覆寫
+# （yfinance 一次請求即可取得全部歷史，資料量小，成本可忽略）。
 
-    startStr = since.isoformat() if hasattr(since, "isoformat") else str(since)
-    hist = yf.Ticker(ticker).history(start=startStr, auto_adjust=True)
-    if hist.empty:
-        return pd.DataFrame()
-    hist = hist.reset_index()
-    hist.columns = [c.lower() for c in hist.columns]
-    hist["date"] = pd.to_datetime(hist["date"]).dt.date
-    cols = [c for c in ["date", "open", "high", "low", "close", "volume"] if c in hist.columns]
-    df = hist[cols].dropna(subset=["close"])
-    # 只取 since 之後的資料（不含 since 本身，避免重複）
-    if since:
-        df = df[df["date"] > since]
-    return df.reset_index(drop=True)
+def fetchUsEtfIncremental(ticker: str, since) -> pd.DataFrame:
+    return fetchUsEtfHistory(ticker)
 
 
 def fetchTwoEtfIncremental(ticker: str, since) -> pd.DataFrame:
-    """TPEx OTC ETF 增量更新，使用 yfinance TICKER.TWO。"""
-    startStr = since.isoformat() if (since and hasattr(since, "isoformat")) else None
-    hist = yf.Ticker(f"{ticker}.TWO").history(
-        start=startStr, period=("max" if startStr is None else None), auto_adjust=True
-    )
-    if hist.empty:
-        return pd.DataFrame()
-    hist = hist.reset_index()
-    hist.columns = [c.lower() for c in hist.columns]
-    hist["date"] = pd.to_datetime(hist["date"]).dt.date
-    cols = [c for c in ["date", "open", "high", "low", "close", "volume"] if c in hist.columns]
-    df = hist[cols].dropna(subset=["close"])
-    if since:
-        df = df[df["date"] > since]
-    return df.reset_index(drop=True)
+    """TPEx OTC ETF 更新，使用 yfinance TICKER.TWO 全量重抓。"""
+    return fetchTwoEtfHistory(ticker)
 
 
 def fetchTwseEtfIncremental(ticker: str, since) -> pd.DataFrame:
-    startStr = since.isoformat() if (since and hasattr(since, "isoformat")) else None
-    try:
-        hist = yf.Ticker(f"{ticker}.TW").history(
-            start=startStr, period=("max" if startStr is None else None), auto_adjust=True
-        )
-        if not hist.empty:
-            hist = hist.reset_index()
-            hist.columns = [c.lower() for c in hist.columns]
-            hist["date"] = pd.to_datetime(hist["date"]).dt.date
-            cols = [c for c in ["date", "open", "high", "low", "close", "volume"] if c in hist.columns]
-            df = hist[cols].dropna(subset=["close"])
-            if since:
-                df = df[df["date"] > since]
-            if not df.empty:
-                return df.reset_index(drop=True)
-    except Exception:
-        pass
-
-    # 備用：TWSE API
-    if since is None:
-        return fetchTwseViaApi(ticker, startYear=2010)
-
-    startYear = since.year if hasattr(since, "year") else int(str(since)[:4])
-    df = fetchTwseViaApi(ticker, startYear=startYear)
-    if df.empty:
-        return df
-    df["date"] = pd.to_datetime(df["date"]).dt.date if df["date"].dtype == object else df["date"]
-    if since:
-        df = df[df["date"] > since]
-    return df.reset_index(drop=True)
+    # fetchTwseEtfHistory 內部已含 twstock → TWSE API 備援
+    return fetchTwseEtfHistory(ticker)
 
 
 # ──────────────────────────────────────────────

@@ -79,18 +79,28 @@ def fetchUsEtfs(conn, etfList: list):
             updateFetchStatus(conn, ticker, None, "error", str(e))
 
 
-def fetchUsEtfHistory(ticker: str) -> pd.DataFrame:
-    yTicker = yf.Ticker(ticker)
-    hist = yTicker.history(period="max", auto_adjust=True)
-    if hist.empty:
-        return pd.DataFrame()
+def yfHistToDf(hist: pd.DataFrame) -> pd.DataFrame:
+    """
+    yfinance history(auto_adjust=False) 結果 → 標準價格 DataFrame。
+
+    auto_adjust=False 時 Close 仍已還原分割、但未還原配息（即實際市價基準），
+    Adj Close 則為分割＋配息皆還原的含息價。兩者分別存入 close / adj_close：
+    close 給 DCA 模擬（避免配息被重複計算），adj_close 給總報酬類的主報表。
+    """
     hist = hist.reset_index()
     hist.columns = [c.lower() for c in hist.columns]
     hist["date"] = pd.to_datetime(hist["date"]).dt.date
-    hist = hist.rename(columns={"stock splits": "stock_splits", "capital gains": "capital_gains"})
-    cols = ["date", "open", "high", "low", "close", "volume"]
+    hist = hist.rename(columns={"adj close": "adj_close"})
+    cols = ["date", "open", "high", "low", "close", "adj_close", "volume"]
     cols = [c for c in cols if c in hist.columns]
     return hist[cols].dropna(subset=["close"])
+
+
+def fetchUsEtfHistory(ticker: str) -> pd.DataFrame:
+    hist = yf.Ticker(ticker).history(period="max", auto_adjust=False)
+    if hist.empty:
+        return pd.DataFrame()
+    return yfHistToDf(hist)
 
 
 def fetchUsEtfInfo(ticker: str, configEntry: dict) -> dict:
@@ -189,22 +199,11 @@ def fetchTwoEtfs(conn, etfList: list):
         ticker = etf["ticker"]
         print(f"  {ticker} ...", end=" ", flush=True)
         try:
-            yTicker = yf.Ticker(f"{ticker}.TWO")
-            hist = yTicker.history(period="max", auto_adjust=True)
-            if hist.empty:
-                print("無資料，跳過")
-                updateFetchStatus(conn, ticker, None, "error", "yfinance TWO 回傳空資料")
-                continue
-            hist = hist.reset_index()
-            hist.columns = [c.lower() for c in hist.columns]
-            hist["date"] = pd.to_datetime(hist["date"]).dt.date
-            cols = [c for c in ["date", "open", "high", "low", "close", "volume"] if c in hist.columns]
-            df = hist[cols].dropna(subset=["close"])
+            df = fetchTwoEtfHistory(ticker)
             if df.empty:
                 print("無資料，跳過")
                 updateFetchStatus(conn, ticker, None, "error", "yfinance TWO 回傳空資料")
                 continue
-            df = fixUnadjustedSplits(df)
             upsertPrices(conn, df, ticker, "TWD")
             info = buildTwseInfo(ticker, etf)
             info["exchange"] = "TWO"
@@ -215,6 +214,14 @@ def fetchTwoEtfs(conn, etfList: list):
         except Exception as e:
             print(f"錯誤：{e}")
             updateFetchStatus(conn, ticker, None, "error", str(e))
+
+
+def fetchTwoEtfHistory(ticker: str) -> pd.DataFrame:
+    hist = yf.Ticker(f"{ticker}.TWO").history(period="max", auto_adjust=False)
+    if hist.empty:
+        return pd.DataFrame()
+    df = yfHistToDf(hist)
+    return fixUnadjustedSplits(df) if not df.empty else df
 
 
 # ──────────────────────────────────────────────
@@ -274,7 +281,7 @@ def fixUnadjustedSplits(df: pd.DataFrame, threshold: float = 0.30) -> pd.DataFra
 
         print(f"    偵測到疑似未回溯調整的分割事件於 {df['date'].iloc[i]}"
               f"（比例 {ratio:.4f}），已將該日之前價格等比例縮放")
-        for col in ["open", "high", "low", "close"]:
+        for col in ["open", "high", "low", "close", "adj_close"]:
             if col in df.columns:
                 df.loc[: i - 1, col] = df.loc[: i - 1, col] * ratio
         closes = df["close"].to_numpy()
@@ -284,18 +291,15 @@ def fixUnadjustedSplits(df: pd.DataFrame, threshold: float = 0.30) -> pd.DataFra
 
 def fetchTwseEtfHistory(ticker: str) -> pd.DataFrame:
     """
-    主要策略：yfinance TICKER.TW（auto_adjust=True，已還原股票分割）
-    備用策略：twstock 函式庫 → TWSE STOCK_DAY API
+    主要策略：yfinance TICKER.TW（auto_adjust=False：close 已還原分割、
+             未還原配息；adj_close 為含息還原價）
+    備用策略：twstock 函式庫 → TWSE STOCK_DAY API（僅有市價，無 adj_close）
     """
     # 優先使用 yfinance，取得還原分割後的歷史價格
     try:
-        hist = yf.Ticker(f"{ticker}.TW").history(period="max", auto_adjust=True)
+        hist = yf.Ticker(f"{ticker}.TW").history(period="max", auto_adjust=False)
         if not hist.empty:
-            hist = hist.reset_index()
-            hist.columns = [c.lower() for c in hist.columns]
-            hist["date"] = pd.to_datetime(hist["date"]).dt.date
-            cols = [c for c in ["date", "open", "high", "low", "close", "volume"] if c in hist.columns]
-            df = hist[cols].dropna(subset=["close"])
+            df = yfHistToDf(hist)
             if not df.empty:
                 return fixUnadjustedSplits(df)
     except Exception:
@@ -429,16 +433,19 @@ def buildTwseInfo(ticker: str, configEntry: dict) -> dict:
 # ──────────────────────────────────────────────
 
 def upsertPrices(conn, df: pd.DataFrame, ticker: str, currency: str):
+    # 所有抓取路徑均回傳完整歷史，採整批覆寫：先刪除既有資料再寫入，
+    # 避免來源已下架/修正的日期殘留舊值（adj_close 回溯還原也因此保持一致基準）
     df = df.copy()
     df["ticker"] = ticker
     df["currency"] = currency
-    for col in ["open", "high", "low", "volume"]:
+    for col in ["open", "high", "low", "adj_close", "volume"]:
         if col not in df.columns:
             df[col] = None
-    rows = df[["ticker", "date", "open", "high", "low", "close", "volume", "currency"]].values.tolist()
+    rows = df[["ticker", "date", "open", "high", "low", "close", "adj_close", "volume", "currency"]].values.tolist()
+    conn.execute("DELETE FROM etf_prices WHERE ticker = ?", [ticker])
     conn.executemany(
-        "INSERT OR REPLACE INTO etf_prices (ticker, date, open, high, low, close, volume, currency) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO etf_prices (ticker, date, open, high, low, close, adj_close, volume, currency) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         rows
     )
 

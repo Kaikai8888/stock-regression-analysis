@@ -30,6 +30,7 @@
 
   <!-- Tab：個股走勢 -->
   <section id="tab-prices" class="tab-content active">
+    <p class="info-text">市價收盤（已還原分割、未含配息）</p>
     <div class="controls">
       <label>選擇 ETF：
         <select id="pricesTicker"></select>
@@ -40,6 +41,7 @@
 
   <!-- Tab：正規化比較 -->
   <section id="tab-normalized" class="tab-content">
+    <p class="info-text">含息還原價（配息再投資之總報酬），起始值 = 100</p>
     <div class="controls">
       <label>選擇 ETF（可複選）：</label>
       <div id="normalizedCheckboxes" class="checkbox-group"></div>
@@ -49,7 +51,7 @@
 
   <!-- Tab：回歸分析 -->
   <section id="tab-regression" class="tab-content">
-    <p class="info-text">以 <strong id="benchmarkLabel"></strong> 為基準標的（可在 config.yaml 修改）</p>
+    <p class="info-text">以 <strong id="benchmarkLabel"></strong> 為基準標的（可在 config.yaml 修改）；日報酬以含息還原價計算</p>
     <table id="regressionTable" class="data-table">
       <thead>
         <tr>
@@ -65,6 +67,7 @@
 
   <!-- Tab：投資組合比較 -->
   <section id="tab-portfolio" class="tab-content">
+    <p class="info-text">含息還原價（配息再投資之總報酬），已內含基金實際管理費</p>
     <div id="portfolioChart" class="chart"></div>
     <h3>統計摘要</h3>
     <table id="portfolioSummary" class="data-table">

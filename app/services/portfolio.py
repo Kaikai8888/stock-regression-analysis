@@ -33,9 +33,11 @@ def buildPortfolioCumulativeReturns(
     startStr = startDate.isoformat() if hasattr(startDate, "isoformat") else str(startDate)
     endStr = endDate.isoformat() if hasattr(endDate, "isoformat") else str(endDate)
 
+    # 總報酬使用含息還原價 adj_close（配息已還原進價格，等同股息再投資）；
+    # 部分備援來源（TWSE API）無 adj_close 時退回市價 close
     pricesDf = conn.execute(
         f"""
-        SELECT ticker, date, close, currency
+        SELECT ticker, date, COALESCE(adj_close, close) AS close, currency
         FROM etf_prices
         WHERE ticker IN ({placeholders})
           AND date BETWEEN ? AND ?

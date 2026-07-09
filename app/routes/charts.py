@@ -43,8 +43,9 @@ def normalized():
 
     with getReadConn(dbPath) as conn:
         placeholders = ",".join(["?" for _ in tickers])
+        # 正規化比較使用含息還原價（總報酬），無 adj_close 時退回市價
         pricesDf = conn.execute(
-            f"SELECT ticker, date, close, currency FROM etf_prices "
+            f"SELECT ticker, date, COALESCE(adj_close, close) AS close, currency FROM etf_prices "
             f"WHERE ticker IN ({placeholders}) AND date BETWEEN ? AND ? ORDER BY ticker, date",
             tickers + [start, end]
         ).df()
@@ -89,8 +90,9 @@ def regression():
     dbPath = current_app.config["DB_PATH"]
     with getReadConn(dbPath) as conn:
         placeholders = ",".join(["?" for _ in tickers])
+        # 迴歸以含息還原價的日報酬計算（總報酬），無 adj_close 時退回市價
         pricesDf = conn.execute(
-            f"SELECT ticker, date, close, currency FROM etf_prices "
+            f"SELECT ticker, date, COALESCE(adj_close, close) AS close, currency FROM etf_prices "
             f"WHERE ticker IN ({placeholders}) AND date BETWEEN ? AND ? ORDER BY ticker, date",
             tickers + [start, end]
         ).df()

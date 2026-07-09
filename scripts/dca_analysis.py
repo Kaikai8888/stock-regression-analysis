@@ -37,6 +37,7 @@ REPORTS_DIR = Path(__file__).parent.parent / "reports"
 # 分析時間區間
 PERIODS = [
     ("最長期間", None),
+    ("15年",     relativedelta(years=15)),
     ("10年",     relativedelta(years=10)),
     ("5年",      relativedelta(years=5)),
     ("3年",      relativedelta(years=3)),
@@ -1103,10 +1104,10 @@ def writeCagrSheet(ws, allResults: list, monthlyAmount: float, nthDay: int):
     today = date.today()
 
     # 第一列：大標題
-    lastCol = get_column_letter(1 + len(periodNames))
+    lastCol = get_column_letter(1 + len(periodNames) * 2)
     ws.merge_cells(f"A1:{lastCol}1")
     ws["A1"] = (
-        f"定期定額年化報酬率（IRR / 金額加權）"
+        f"定期定額年化報酬率（IRR / 金額加權，以未含息市價計算、不含配息）"
         f"  ▸  每月 {monthlyAmount:,.0f} TWD，第 {nthDay} 個交易日"
         f"  ▸  資料截至 {today}"
     )
@@ -1190,7 +1191,7 @@ def writeDetailSheet(ws, allResults: list, monthlyAmount: float, nthDay: int):
     lastCol = get_column_letter(9)
     ws.merge_cells(f"A1:{lastCol}1")
     ws["A1"] = (
-        f"定期定額各期間詳細統計  ▸  每月 {monthlyAmount:,.0f} TWD，第 {nthDay} 個交易日  ▸  資料截至 {today}"
+        f"定期定額各期間詳細統計（以未含息市價計算、不含配息）  ▸  每月 {monthlyAmount:,.0f} TWD，第 {nthDay} 個交易日  ▸  資料截至 {today}"
     )
     _headerCell(ws, 1, 1, ws["A1"].value, size=11, wrap=True)
     ws.row_dimensions[1].height = 28
