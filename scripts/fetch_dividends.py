@@ -1,28 +1,28 @@
 """
-從 MoneyDJ「配息紀錄」頁籤抓取 ETF 歷史配息資料，儲存至 etf_dividends 資料表。
+抓取 ETF 歷史配息資料，儲存至 etf_dividends 資料表。
 
-資料來源：
-  https://www.moneydj.com/ETF/X/Basic/Basic0005.xdjhtm?etfid=TICKER.TW  （台灣 ETF）
-  https://www.moneydj.com/ETF/X/Basic/Basic0005.xdjhtm?etfid=TICKER     （美股 ETF）
+資料來源（依序嘗試）：
+  1. yfinance Ticker.dividends — 完整歷史配息，且金額與價格同為「分割還原」
+     基準（例如 0050 於 2025-06 一拆四後，分割前的每單位配息會等比例縮小），
+     與 etf_prices 的單位數計算基準一致。
+  2. MoneyDJ Basic0005（備援）— 僅近二年紀錄：
+     https://www.moneydj.com/ETF/X/Basic/Basic0005.xdjhtm?etfid=TICKER[.TW]
 
 抓取欄位：
   - 除息日 (ex_date)
-  - 配息總額 (amount_per_unit)：每單位配息金額
+  - 配息總額 (amount_per_unit)：每單位配息金額（原始幣別）
   - 幣別 (currency)
 
 說明：
-  MoneyDJ 僅顯示近二年配息紀錄。
-  對於資料期間以外的年份，DCA 分析時將以所有有資料年份的年均配息金額估算，
-  並在產出報表中標注「估算」。
-  美股 ETF 若 MoneyDJ 無資料，DCA 股息再投資則不納入計算。
+  yfinance 提供完整歷史，DCA 分析僅在極少數缺資料年份需要以年均估算
+  （標注「估算」）。僅剩 MoneyDJ 備援資料（近二年）時估算年份較多。
 
-每次執行時，若 DB 中已有該 ticker 近 45 天的配息資料，則跳過重抓（避免對
-MoneyDJ 造成過多請求）。強制更新請刪除 etf_dividends 中的相關資料後再執行。
+每次執行時，若 DB 中已有該 ticker 近 45 天的配息資料，則跳過重抓。
+強制更新請刪除 etf_dividends 中的相關資料後再執行。
 
 執行方式：
   python scripts/fetch_dividends.py
 """
-import re
 import sys
 import time
 from datetime import date, datetime
@@ -30,6 +30,7 @@ from pathlib import Path
 
 import urllib3
 import requests
+import yfinance as yf
 from bs4 import BeautifulSoup
 import yaml
 
@@ -62,6 +63,41 @@ def _buildEtfId(ticker: str, exchange: str) -> str:
     if exchange in ("TWSE", "TWO"):
         return f"{ticker}.TW"
     return ticker
+
+
+def _buildYfSymbol(ticker: str, exchange: str) -> str:
+    """yfinance 代號：TWSE 加 .TW、TPEx 加 .TWO、美股不加。"""
+    if exchange == "TWSE":
+        return f"{ticker}.TW"
+    if exchange == "TWO":
+        return f"{ticker}.TWO"
+    return ticker
+
+
+def fetchDividendsYfinance(ticker: str, exchange: str) -> list[dict]:
+    """
+    從 yfinance 抓取完整歷史配息。
+    回傳 [{ticker, ex_date, amount_per_unit, currency}, ...]，失敗回傳空列表。
+    """
+    currency = "TWD" if exchange in ("TWSE", "TWO") else "USD"
+    try:
+        series = yf.Ticker(_buildYfSymbol(ticker, exchange)).dividends
+    except Exception as e:
+        print(f"    yfinance 請求失敗：{e}")
+        return []
+    if series is None or series.empty:
+        return []
+
+    return [
+        {
+            "ticker":          ticker,
+            "ex_date":         ts.date(),
+            "amount_per_unit": float(amount),
+            "currency":        currency,
+        }
+        for ts, amount in series.items()
+        if amount and amount > 0
+    ]
 
 
 def _parseDate(text: str) -> date | None:
@@ -171,17 +207,18 @@ def parseDividends(ticker: str, exchange: str) -> list[dict]:
     return results
 
 
-def upsertDividends(conn, rows: list[dict]) -> None:
-    """將配息資料寫入 DB（upsert）。"""
+def upsertDividends(conn, ticker: str, rows: list[dict]) -> None:
+    """
+    將配息資料整批覆寫入 DB（先刪後插）。
+    配息金額在分割後會整段回溯還原（與價格同基準），不可增量混用新舊基準。
+    """
     if not rows:
         return
+    conn.execute("DELETE FROM etf_dividends WHERE ticker = ?", [ticker])
     conn.executemany(
         """
         INSERT INTO etf_dividends (ticker, ex_date, amount_per_unit, currency)
         VALUES (?, ?, ?, ?)
-        ON CONFLICT (ticker, ex_date) DO UPDATE SET
-            amount_per_unit = excluded.amount_per_unit,
-            currency        = excluded.currency
         """,
         [(r["ticker"], r["ex_date"], r["amount_per_unit"], r["currency"]) for r in rows],
     )
@@ -215,9 +252,7 @@ def main():
         for etf in config.get("etfs", [])
     ]
 
-    print("MoneyDJ ETF 配息紀錄抓取")
-    print(f"來源：{MONEYDJ_BASE_URL.format(etfid='TICKER.TW')}")
-    print("說明：MoneyDJ 顯示近二年配息；資料不足年份於 DCA 分析時以均值估算")
+    print("ETF 配息紀錄抓取（yfinance 完整歷史，MoneyDJ 近二年備援）")
     print("=" * 60)
 
     conn = initDb(str(DB_PATH))
@@ -231,15 +266,19 @@ def main():
                 continue
 
             print(f"  [{ticker}]", end="  ", flush=True)
-            rows = parseDividends(ticker, exchange)
-            if rows:
-                upsertDividends(conn, rows)
-                ex_dates = sorted(r["ex_date"] for r in rows)
-                print(f"已儲存 {len(rows)} 筆（{ex_dates[0]} ~ {ex_dates[-1]}）")
-            else:
-                print("無配息資料或解析失敗（US ETF 或無配息 ETF）")
+            rows = fetchDividendsYfinance(ticker, exchange)
+            source = "yfinance"
+            if not rows:
+                rows = parseDividends(ticker, exchange)
+                source = "MoneyDJ"
+                time.sleep(REQUEST_DELAY)
 
-            time.sleep(REQUEST_DELAY)
+            if rows:
+                upsertDividends(conn, ticker, rows)
+                ex_dates = sorted(r["ex_date"] for r in rows)
+                print(f"已儲存 {len(rows)} 筆（{ex_dates[0]} ~ {ex_dates[-1]}，來源 {source}）")
+            else:
+                print("無配息資料或解析失敗（無配息 ETF？）")
     finally:
         conn.close()
 

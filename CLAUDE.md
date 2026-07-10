@@ -69,7 +69,7 @@ yfinance / TWSE API / MoneyDJ
 - `fetch_status`: per-ticker fetch state and error tracking
 - `fx_rates`: USD→TWD daily historical rates
 - `etf_tracking_diff`: ticker, quarter (e.g. `2025Q4`), market_return, benchmark_return, diff (market − benchmark, %)
-- `etf_dividends`: ticker, ex_date, amount_per_unit (native currency), currency — populated by `fetch_dividends.py` from MoneyDJ Basic0005 (last 2 years only)
+- `etf_dividends`: ticker, ex_date, amount_per_unit (native currency), currency — populated by `fetch_dividends.py` from yfinance full dividend history (MoneyDJ Basic0005 as fallback, last 2 years only). Amounts are split-adjusted, same basis as `etf_prices`; refresh is delete-then-insert per ticker because splits restate historical amounts.
 
 **`app/services/regression.py`** — Beta, alpha (annualized), R², P-value vs benchmark; 60-day rolling beta.
 
@@ -87,11 +87,11 @@ yfinance / TWSE API / MoneyDJ
 4. **含股息再投資 CAGR** — IRR & simple CAGR with dividend reinvestment; portfolios using estimated dividends marked with `*`
 5. **含股息再投資詳細** — Full stats with dividends + total fees paid + per-ETF dividend estimation notes
 
-Fee logic (`_applyFee`): reads `config.yaml dca.fees`; applied to every purchase (regular DCA and dividend reinvestment alike). Purchases below the minimum investment threshold are skipped entirely. Fee amounts for US ETFs are converted from USD to TWD using the FX rate at the trade date. Total fees are tracked in `summary["total_fees"]` and shown in the Excel detail sheets.
+Fee logic (`_applyFee`): reads `config.yaml dca.fees`; applied to every purchase (regular DCA and dividend reinvestment alike). Regular monthly purchases below the minimum investment threshold are skipped; dividends below the threshold accumulate as pending cash per ticker, get reinvested once they reach the minimum, and any remainder counts toward final value. Fee amounts for US ETFs are converted from USD to TWD using the FX rate at the trade date. Total fees are tracked in `summary["total_fees"]` and shown in the Excel detail sheets.
 
-Dividend reinvestment logic (`buildDividendCalendars`): MoneyDJ only provides the last 2 years of data. For years without actual records, the average annual per-unit dividend across all years with data is used as an estimate, distributed at the typical payment months (e.g. January & July for 0050). Estimated events are flagged `is_estimated=True`; the Excel sheets annotate this clearly.
+Dividend reinvestment logic (`buildDividendCalendars`): dividend data comes from yfinance full history, so most simulation years use actual records. For years without any records, the average annual per-unit dividend across "complete years" (years strictly between the first and last data years — boundary years are partial and would understate the average, especially for monthly payers) is used as an estimate, distributed at the typical payment months. For the head-partial boundary year (records start mid-year), months before the data window are back-filled with estimates. Estimated events are flagged `is_estimated=True`; the Excel sheets annotate this clearly.
 
-**`scripts/fetch_dividends.py`** — Fetches ETF dividend records from MoneyDJ Basic0005 (last 2 years). Taiwan ETFs use `etfid=TICKER.TW`; US ETFs use `etfid=TICKER`. Skips if DB already has data within the last 45 days.
+**`scripts/fetch_dividends.py`** — Fetches full ETF dividend history from yfinance (`Ticker.dividends`; TWSE → `.TW`, TPEx → `.TWO`), falling back to MoneyDJ Basic0005 (last 2 years) when yfinance has none. Delete-then-insert per ticker. Skips if DB already has data within the last 45 days.
 
 **`scripts/fetch_vt_country_allocation.py`** — Fetches VT country allocation from MoneyDJ Basic0007 (`持股分佈(依區域)`). Country names are in Traditional Chinese. Aggregates into 美國, 日本, 歐洲 (21 countries incl. 英國), 中國, 台灣, and 其他. Prints three breakdowns: (1) raw weights incl. 其他, (2) relative weights excluding 其他, (3) relative weights excluding 其他 and 中國. `calcRelative()` accepts an `exclude` set for flexible region filtering.
 

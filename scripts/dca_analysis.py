@@ -335,8 +335,8 @@ def buildDividendCalendars(
     為所有 ticker 建立完整的配息日曆（涵蓋整個模擬期間）。
 
     邏輯：
-      - MoneyDJ 僅提供近二年資料；無資料的年份以「所有有資料年份的年均配息金額」估算，
-        並標記 is_estimated=True。
+      - 配息資料以 yfinance 完整歷史為主（備援 MoneyDJ 僅近二年）；無資料的
+        年份以「完整年度的年均配息金額」估算，並標記 is_estimated=True。
       - 金額一律換算為 TWD。
 
     回傳：
@@ -387,20 +387,19 @@ def buildDividendCalendars(
             for _, row in tickerDf.iterrows()
         ]
 
-        # 按年彙總，找出「完整年度」（當年有跨越 ≥ 150 天的配息紀錄）
+        # 按年彙總，找出「完整年度」＝資料窗口的內部年份（嚴格介於首尾資料
+        # 年之間）。首年可能自基金成立日或來源窗口起點才開始、末年通常尚未
+        # 結束，都只涵蓋部分月份；對月配息 ETF 若誤當完整年度，年均配息會被
+        # 大幅低估（曾發現 IEF 低估約 9%、SHY 約 14%）。
         annual_totals: dict[int, float] = {}
         for ev in all_events:
             yr = ev["ex_date"].year
             annual_totals[yr] = annual_totals.get(yr, 0.0) + ev["amount_per_unit_twd"]
 
-        complete_years: dict[int, float] = {}
-        for yr, total in annual_totals.items():
-            yr_evs = sorted([e for e in all_events if e["ex_date"].year == yr],
-                            key=lambda e: e["ex_date"])
-            if len(yr_evs) >= 2:
-                span_days = (yr_evs[-1]["ex_date"] - yr_evs[0]["ex_date"]).days
-                if span_days >= 150:
-                    complete_years[yr] = total
+        firstDataYear = min(annual_totals)
+        lastDataYear  = max(annual_totals)
+        complete_years = {yr: total for yr, total in annual_totals.items()
+                          if firstDataYear < yr < lastDataYear}
         if not complete_years:
             complete_years = annual_totals
 
@@ -431,23 +430,38 @@ def buildDividendCalendars(
             if startDate <= e["ex_date"] <= endDate
         ]
 
-        # 補估缺乏資料的年份
+        # 補估缺乏資料的年份／月份：
+        #   - 全年無資料 → 補估所有典型月份
+        #   - 該年有資料但落在資料窗口起點之後 → 補估「窗口起點之前」的缺漏
+        #     月份（例如來源僅近二年時，窗口起點當年的前幾個月會被截斷）
+        first_actual = min(e["ex_date"] for e in all_events)
         years_estimated = 0
         for yr in range(startDate.year, endDate.year + 1):
-            if any(e["ex_date"].year == yr for e in all_events):
-                continue   # 有實際資料，不補估
-            years_estimated += 1
+            yearHasData = any(e["ex_date"].year == yr for e in all_events)
+            added = False
             for m in typical_months:
                 try:
                     est_date = date(yr, m, 15)
                 except ValueError:
                     est_date = date(yr, m, 28)
-                if startDate <= est_date <= endDate and est_date not in actual_dates_in_period:
-                    calendar.append({
-                        "ex_date":            est_date,
-                        "amount_per_unit_twd": amount_per_pay,
-                        "is_estimated":        True,
-                    })
+                if not (startDate <= est_date <= endDate):
+                    continue
+                if yearHasData:
+                    if est_date >= first_actual:
+                        continue   # 窗口內的月份以實際資料為準，不補估
+                    if any(e["ex_date"].year == yr and e["ex_date"].month == m
+                           for e in all_events):
+                        continue   # 該月已有實際配息，避免重複
+                if est_date in actual_dates_in_period:
+                    continue
+                calendar.append({
+                    "ex_date":            est_date,
+                    "amount_per_unit_twd": amount_per_pay,
+                    "is_estimated":        True,
+                })
+                added = True
+            if added:
+                years_estimated += 1
 
         calendar.sort(key=lambda e: e["ex_date"])
 
@@ -669,7 +683,8 @@ def runDcaWithDividends(
     """
     模擬含股息再投資的定期定額。
     與 runDcaSimulation 邏輯相同，但在每個配息除息日自動將股息買回股份。
-    股息再投資不另收手續費。
+    股息再投資同樣收取手續費並受最低申購額限制；未達門檻的配息累積為
+    現金，達門檻後於下次配息日買回，期末仍未投入的現金計入最終淨值。
 
     divCalendars: buildDividendCalendars() 的回傳值。
     """
@@ -690,6 +705,7 @@ def runDcaWithDividends(
         return None, None
 
     unitsPerTicker: dict[str, float] = {t: 0.0 for t in validTickers}
+    pendingCashTwd: dict[str, float] = {t: 0.0 for t in validTickers}
     transactions: list[dict] = []
     cashflowDates:   list[date]  = []
     cashflowAmounts: list[float] = []
@@ -708,7 +724,11 @@ def runDcaWithDividends(
     div_ptr = 0
 
     def _processDividends(up_to_date: date) -> None:
-        """處理所有 ≤ up_to_date 且尚未處理的配息事件（股息再投資亦收手續費）。"""
+        """
+        處理所有 ≤ up_to_date 且尚未處理的配息事件（股息再投資亦收手續費）。
+        配息先累積至 pendingCashTwd，達最低申購額才買回；未達門檻的現金
+        保留至之後的配息日再嘗試，不會憑空消失。
+        """
         nonlocal div_ptr, totalDivIncomeTwd, totalFees
         while div_ptr < len(sorted_div_dates) and sorted_div_dates[div_ptr] <= up_to_date:
             ex_date        = sorted_div_dates[div_ptr]
@@ -725,11 +745,13 @@ def runDcaWithDividends(
                         continue
                     div_income = unitsPerTicker[t] * div_amt
                     totalDivIncomeTwd += div_income
+                    pendingCashTwd[t] += div_income
                     currency = (etfInfoMap or {}).get(t, {}).get("currency", "TWD")
-                    netIncome, feeTwd = _applyFee(div_income, currency, feeConfig, fx_at_ex)
-                    totalFees += feeTwd
+                    netIncome, feeTwd = _applyFee(pendingCashTwd[t], currency, feeConfig, fx_at_ex)
                     if netIncome > 0:
+                        totalFees += feeTwd
                         unitsPerTicker[t] += netIncome / price
+                        pendingCashTwd[t] = 0.0
             div_ptr += 1
 
     for d in investDates:
@@ -780,7 +802,7 @@ def runDcaWithDividends(
         unitsPerTicker[t] * float(pricePivot.loc[latestDt, t])
         for t in validTickers
         if not pd.isna(pricePivot.loc[latestDt, t])
-    )
+    ) + sum(pendingCashTwd.values())   # 未達申購門檻的配息現金仍屬資產
 
     totalInvested = monthlyAmount * len(transactions)
     cashflowDates.append(latestDt.date())
@@ -1448,9 +1470,9 @@ def writeDivCagrSheet(
     # 說明副標題
     ws.merge_cells(f"A2:{lastCol}2")
     ws["A2"] = (
-        "股息再投資：配息除息日以當日收盤價買回股份。"
-        "MoneyDJ 僅提供近二年配息紀錄，無資料年份以所有有資料年份的年均配息金額估算（標記「*」）。"
-        "無配息資料的 ETF（部分美股 ETF）不納入股息再投資計算。"
+        "股息再投資：配息除息日以當日收盤價買回股份；未達最低申購額的配息累積為現金，達門檻後買回，期末剩餘現金計入淨值。"
+        "配息資料取自 yfinance 完整歷史（備援 MoneyDJ 近二年），無資料年份以完整年度的年均配息金額估算（標記「*」）。"
+        "無配息資料的 ETF 不納入股息再投資計算。"
     )
     c = ws["A2"]
     c.fill = PatternFill("solid", fgColor="EBF3FB")
@@ -1685,12 +1707,12 @@ def writeDivDetailSheet(
 
         month_str = "、".join(f"{m}月" for m in typ_months) if typ_months else "—"
         if not has_data:
-            note = "MoneyDJ 無配息資料，不納入股息再投資計算"
+            note = "無配息資料，不納入股息再投資計算"
         elif yrs_est == 0:
             note = "所有模擬期間均有實際配息資料"
         else:
             note = (
-                f"近二年有實際資料；其餘 {yrs_est} 年以年均 "
+                f"部分年份缺實際資料；{yrs_est} 年（全年或部分月份）以年均 "
                 f"{avg_annual:.4f} TWD/單位估算（{month_str}配息）"
             )
 
